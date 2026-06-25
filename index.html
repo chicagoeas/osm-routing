@@ -3831,6 +3831,9 @@ async function fetchBusRouteGeometry(routeRef,fromLat,fromLon,toLat,toLon){
     try{localStorage.setItem(lsKey,JSON.stringify({ts:Date.now(),coords:result}));}catch{}
     return result;
   }catch(e){
+    // If the bus route was found but simply doesn't serve the destination, re-throw —
+    // falling back to a walk path and labelling it as a bus route is wrong.
+    if(/does not reach/.test(e.message)) throw e;
     console.warn('[fetchBusRouteGeometry] Overpass failed:',e.message,'— falling back to OSRM walk path');
     // Use OSRM street routing as a bus-path approximation so the polyline follows
     // real streets rather than being a meaningless straight line.
@@ -4543,8 +4546,10 @@ function applyTransitResult(option,silent){
         };
         const bStn=_findStn(leg.from);
         const eStn=_findStn(leg.exitAt||leg.to);
-        if(bStn)sCoord=[bStn.lat,bStn.lon];
-        if(eStn)eCoord=[eStn.lat,eStn.lon];
+        // Snap both the circle coordinate AND the geometry endpoint so the line
+        // runs exactly from circle to circle with no gap.
+        if(bStn){sCoord=[bStn.lat,bStn.lon];coords[0]=sCoord;}
+        if(eStn){eCoord=[eStn.lat,eStn.lon];coords[coords.length-1]=eCoord;}
       }
       const[sLa,sLo]=sCoord;
       const[eLa,eLo]=eCoord;
