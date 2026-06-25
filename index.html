@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -702,7 +703,11 @@
 <div id="map-view-popup">
   <div class="mvp-title">Map view</div>
   <div class="mvp-grid" id="mvp-style-grid">
-    <button class="mvp-tile on" data-s="default">
+    <button class="mvp-tile on" data-s="shortbread">
+      <div class="mvp-thumb" style="background:linear-gradient(135deg,#1d3557,#457b9d)">✨</div>
+      <span>Shortbread</span>
+    </button>
+    <button class="mvp-tile" data-s="default">
       <div class="mvp-thumb" style="background:linear-gradient(135deg,#166534,#0d2137)">🗺️</div>
       <span>Default</span>
     </button>
@@ -1048,6 +1053,8 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <!-- CTA static bus stop & route shape data (generated from official GTFS) -->
 <script src="cta-bus-data.js"></script>
 <script>
@@ -1056,7 +1063,9 @@ const WORKER_URL = '';
 
 // ── TILES ─────────────────────────────────────────────────────────────────────
 const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors';
+const OFM_ATTR = OSM_ATTR+', © <a href="https://openfreemap.org" target="_blank">OpenFreeMap</a>';
 const TILES = {
+  shortbread:{ type:'vector', styleUrl:'https://tiles.openfreemap.org/styles/liberty', attr:OFM_ATTR, label:'Shortbread', icon:'✨', bg:'#1d3557' },
   default:   { url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attr:OSM_ATTR, opts:{maxZoom:19}, label:'Default', icon:'🗺️', bg:'#166534' },
   dark:      { url:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', attr:OSM_ATTR+', © <a href="https://carto.com/" target="_blank">CARTO</a>', opts:{maxZoom:19,subdomains:'abcd'}, label:'Dark', icon:'🌑', bg:'#1e293b' },
   light:     { url:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attr:OSM_ATTR+', © <a href="https://carto.com/" target="_blank">CARTO</a>', opts:{maxZoom:19,subdomains:'abcd'}, label:'Light', icon:'☀️', bg:'#b45309' },
@@ -1068,7 +1077,7 @@ const TILES = {
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let map, tileLayer, userMarker, destMarker, routePoly, traveledPoly;
 let userLoc = null, dest = null, routeData = null, routeCoords = [];
-let mapStyle = 'default', reportMode = false, formPos = null, alertInc = null;
+let mapStyle = 'shortbread', reportMode = false, formPos = null, alertInc = null;
 const S = { mode:'driving', avoid:{ highways:false, ferries:false, unpaved:false, tolls:false } };
 // ── GTIS live traffic state ───────────────────────────────────────────────────
 let gtisIncidents = [], gtisMarkers = [], gtisLayerOn = false, gtisTimer = null;
@@ -1228,8 +1237,8 @@ function isDesktop(){ return window.innerWidth >= 680; }
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
 map=L.map('map',{center:[41.8781,-87.6298],zoom:13,zoomControl:false});
-const td=TILES.default;
-tileLayer=L.tileLayer(td.url,{attribution:td.attr,...td.opts}).addTo(map);
+// Initialize with Shortbread vector tiles (setTile handles both raster and vector)
+setTile('shortbread');
 
 map.on('click',e=>{
   if(reportMode){formPos=[e.latlng.lat,e.latlng.lng];setReport(false);openForm();return;}
@@ -1245,10 +1254,16 @@ map.on('dragstart',()=>{
 });
 
 function setTile(style){
-  mapStyle=style;if(tileLayer)map.removeLayer(tileLayer);
+  mapStyle=style;
+  if(tileLayer){map.removeLayer(tileLayer);tileLayer=null;}
   const t=TILES[style];
-  tileLayer=L.tileLayer(t.url,{attribution:t.attr,...t.opts}).addTo(map);
-  tileLayer.bringToBack();
+  if(t.type==='vector'){
+    // Shortbread / MapLibre GL vector tile layer via leaflet-maplibre-gl bridge
+    tileLayer=L.maplibreGL({style:t.styleUrl,attribution:t.attr}).addTo(map);
+  } else {
+    tileLayer=L.tileLayer(t.url,{attribution:t.attr,...t.opts}).addTo(map);
+    tileLayer.bringToBack();
+  }
   renderMapGridMobile();
   renderMapGridDesktop();
   updateMapViewPopupSelection();
@@ -2267,6 +2282,69 @@ function calcRouteDelay(){
     }
     return Math.min(extra,cap);
   }catch(e){console.warn('[calcRouteDelay]',e);return 0;}
+}
+
+// ── calcDelayForCoords ─────────────────────────────────────────────────────────
+// Like calcRouteDelay() but operates on an arbitrary coords array so we can
+// score an alternate route without mutating the global routeCoords.
+function calcDelayForCoords(coords){
+  try{
+    if(!congestionData.length||!coords.length)return 0;
+    const segsWithCoords=congestionData.filter(s=>
+      s.lat!=null&&s.lon!=null&&(CONG_RANK[s.level]??0)>=1
+    );
+    if(!segsWithCoords.length)return 0;
+    const sample=coords.filter((_,i)=>i%5===0);
+    const delayPct={
+      SEVERE_CONGESTION:0.60,Severe:0.60,
+      HEAVY_CONGESTION:0.40,Heavy:0.40,High:0.40,
+      MEDIUM_CONGESTION:0.25,Medium:0.25,Moderate:0.25,
+      LIGHT_CONGESTION:0.10,Light:0.10,Low:0.10,
+    };
+    let extra=0;
+    const seen=new Set();
+    for(const s of segsWithCoords){
+      const key=s.id||(String(s.lat)+'|'+String(s.lon));
+      if(seen.has(key))continue;
+      const near=sample.some(([rla,rlo])=>haversine([s.lat,s.lon],[rla,rlo])<300);
+      if(!near)continue;
+      seen.add(key);
+      if(s.tt>0&&s.avg>0&&s.tt>s.avg){
+        extra+=s.tt-s.avg;
+      }else if(s.tt>0){
+        const pct=delayPct[s.level]||0;
+        if(pct>0) extra+=s.tt*pct;
+      }
+    }
+    return extra;
+  }catch(e){return 0;}
+}
+
+// ── buildTrafficExcludePolygons ────────────────────────────────────────────────
+// For each HEAVY/SEVERE congestion segment near the given route, build a small
+// bounding-box polygon (≈300 m padding) in the format Valhalla expects for
+// exclude_polygons: an array of closed [lat,lon] rings.
+function buildTrafficExcludePolygons(coords){
+  if(!congestionData.length||!coords.length)return[];
+  const PAD=0.003; // ~330 m in degrees
+  const sample=coords.filter((_,i)=>i%5===0);
+  const heavySegs=congestionData.filter(s=>
+    s.lat!=null&&s.lon!=null&&(CONG_RANK[s.level]??0)>=3 // HEAVY or SEVERE only
+  );
+  const polys=[];
+  for(const s of heavySegs){
+    const near=sample.some(([rla,rlo])=>haversine([s.lat,s.lon],[rla,rlo])<400);
+    if(!near)continue;
+    const lats=[s.lat]; if(s.lat2!=null)lats.push(s.lat2);
+    const lons=[s.lon]; if(s.lon2!=null)lons.push(s.lon2);
+    const minLat=Math.min(...lats)-PAD, maxLat=Math.max(...lats)+PAD;
+    const minLon=Math.min(...lons)-PAD, maxLon=Math.max(...lons)+PAD;
+    // Closed ring (first === last) as required by Valhalla
+    polys.push([
+      [minLat,minLon],[minLat,maxLon],[maxLat,maxLon],[maxLat,minLon],[minLat,minLon]
+    ]);
+  }
+  return polys;
 }
 
 function drawTrafficOverlay(){
@@ -4720,7 +4798,7 @@ $('transit-adv-btn').addEventListener('click',()=>{
   showTransitLegNav();
 });
 
-// ── Override fetchRoute to dispatch transit mode ───────────────────────────────
+// ── Override fetchRoute to dispatch transit mode + traffic-aware driving ───────
 // (Function declarations are hoisted; the last declaration wins — this replaces the original)
 async function fetchRoute(silent=false){
   if(!dest||!userLoc)return;
@@ -4732,6 +4810,7 @@ async function fetchRoute(silent=false){
       await fetchRouteOSRM(lo1,la1,lo2,la2,silent);
       return;
     }
+    // ── Build base Valhalla request body ──────────────────────────────────────
     const hasAvoid=S.avoid.highways||S.avoid.ferries||S.avoid.tolls;
     const costingOpts=hasAvoid?{auto:{
       use_highways:S.avoid.highways?0.05:1.0,
@@ -4739,19 +4818,64 @@ async function fetchRoute(silent=false){
       use_tolls:S.avoid.tolls?0.0:1.0
     }}:null;
     const excludeLocs=getExcludeLocations();
-    const makeBody=(withExclude)=>({
+    const baseBody=(withExclude)=>({
       locations:[{lon:lo1,lat:la1,type:'break'},{lon:lo2,lat:la2,type:'break'}],
       costing:'auto',
       directions_options:{units:'kilometers'},
       ...(costingOpts?{costing_options:costingOpts}:{}),
       ...(withExclude&&excludeLocs.length?{exclude_locations:excludeLocs}:{})
     });
+
     let valhallaOk=false;
     try{
-      let data;
-      try{data=await tryValhalla(makeBody(true));}
-      catch(e){if(excludeLocs.length){data=await tryValhalla(makeBody(false));}else{throw e;}}
-      applyRouteResult(data,silent);
+      // ── Phase 1: base route (closure avoidance, no traffic exclusions yet) ──
+      let baseData;
+      try{ baseData=await tryValhalla(baseBody(true)); }
+      catch(e){ if(excludeLocs.length){ baseData=await tryValhalla(baseBody(false)); }else{ throw e; } }
+
+      let finalData=baseData;
+      let savedMin=0;
+
+      // ── Phase 2: traffic-aware rerouting ─────────────────────────────────
+      // Only attempted when live GTIS congestion data is present.
+      // We score each candidate as (Valhalla time) + (GTIS estimated delay)
+      // and take the alternate only when it beats the base by ≥ 2 min.
+      if(congestionData.length){
+        try{
+          const baseCoords=decodePolyline6(baseData.trip.legs[0].shape);
+          const baseValMin=baseData.trip.summary.time/60;
+          const baseDelay=calcDelayForCoords(baseCoords);
+          const baseTotalMin=baseValMin+baseDelay;
+
+          // Identify HEAVY/SEVERE segments on the base route and box them out
+          const excPolys=buildTrafficExcludePolygons(baseCoords);
+
+          if(excPolys.length){
+            const altBody={...baseBody(true),exclude_polygons:excPolys};
+            const altData=await tryValhalla(altBody);
+            const altCoords=decodePolyline6(altData.trip.legs[0].shape);
+            const altValMin=altData.trip.summary.time/60;
+            const altDelay=calcDelayForCoords(altCoords);
+            const altTotalMin=altValMin+altDelay;
+
+            console.log(`[Traffic reroute] base=${baseTotalMin.toFixed(1)} min `+
+              `(Valhalla ${baseValMin.toFixed(1)} + traffic ${baseDelay.toFixed(1)}), `+
+              `alt=${altTotalMin.toFixed(1)} min `+
+              `(Valhalla ${altValMin.toFixed(1)} + traffic ${altDelay.toFixed(1)})`);
+
+            if(altTotalMin<baseTotalMin-2){
+              finalData=altData;
+              savedMin=Math.round(baseTotalMin-altTotalMin);
+            }
+          }
+        }catch(tErr){
+          // Traffic-phase failure is non-fatal; keep the base route
+          console.warn('[Traffic reroute]',tErr.message);
+        }
+      }
+
+      applyRouteResult(finalData,silent);
+      if(savedMin>=2&&!silent) toast(`🚦 Rerouted around traffic — ~${savedMin} min faster`,3500);
       valhallaOk=true;
     }catch(valErr){
       console.warn('[fetchRoute] Valhalla failed ('+valErr.message+'), falling back to OSRM car');
