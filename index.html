@@ -731,6 +731,10 @@
     </span>
     <div class="tog" id="mvp-traffic-tog"></div>
   </div>
+  <div class="mvp-tog-row">
+    <span>🌙 Auto night</span>
+    <div class="tog" id="auto-night-tog"></div>
+  </div>
 </div>
 
 <!-- Settings modal (desktop, two-panel) -->
@@ -995,6 +999,10 @@
         <div><div class="ss-row-lbl">🚦 Live Traffic</div><div class="ss-row-sub">Show incidents &amp; congestion on map</div></div>
         <div class="tog" id="mvp-traffic-tog-m"></div>
       </div>
+      <div class="ss-row">
+        <div><div class="ss-row-lbl">🌙 Auto night</div><div class="ss-row-sub">Switch to dark map at sunset</div></div>
+        <div class="tog" id="auto-night-tog-m"></div>
+      </div>
     </div>
     <div class="ss-sec">
       <div class="ss-sec-lbl">Map Style</div>
@@ -1078,11 +1086,13 @@ const TILES = {
 let map, tileLayer, userMarker, destMarker, routePoly, traveledPoly;
 let userLoc = null, dest = null, routeData = null, routeCoords = [];
 let mapStyle = 'shortbread', reportMode = false, formPos = null, alertInc = null;
+let autoNightMode=(()=>{try{const v=localStorage.getItem('waddle-auto-night');return v===null?true:v==='true';}catch(e){return true;}})();
+let autoNightTimer=null;
 const S = { mode:'driving', avoid:{ highways:false, ferries:false, unpaved:false, tolls:false } };
 // ── GTIS live traffic state ───────────────────────────────────────────────────
 let gtisIncidents = [], gtisMarkers = [], gtisLayerOn = false, gtisTimer = null;
 let gtisClusterGroup = null; // Leaflet.markercluster group for incident point markers
-let trafficPolys = [], rawManeuvers = [];
+let trafficPolys = [], rawManeuvers = [], stepSpeedLimits = [];
 const GTIS_REFRESH_MS = 5 * 60 * 1000; // 5 minutes per Travel Midwest usage rules
 // ── Travel Midwest congestion (travelTime.json) ───────────────────────────────
 let congestionData = [], congTimer = null;
@@ -1253,12 +1263,14 @@ map.on('dragstart',()=>{
   }
 });
 
-function setTile(style){
+// ── Internal tile switcher ─────────────────────────────────────────────────────
+// Used by both manual setTile() and the auto-night system. Does not touch
+// autoNightMode state so the auto-night loop can call it without self-cancelling.
+function _applyTileOnly(style){
   mapStyle=style;
   if(tileLayer){map.removeLayer(tileLayer);tileLayer=null;}
   const t=TILES[style];
   if(t.type==='vector'){
-    // Shortbread / MapLibre GL vector tile layer via leaflet-maplibre-gl bridge
     tileLayer=L.maplibreGL({style:t.styleUrl,attribution:t.attr}).addTo(map);
   } else {
     tileLayer=L.tileLayer(t.url,{attribution:t.attr,...t.opts}).addTo(map);
@@ -1267,6 +1279,72 @@ function setTile(style){
   renderMapGridMobile();
   renderMapGridDesktop();
   updateMapViewPopupSelection();
+}
+
+// Manual user tile pick. Turns off auto-night unless the user is just toggling
+// the transit overlay (which is a layer, not a style preference).
+function setTile(style){
+  if(style!=='transit'){
+    autoNightMode=false;
+    try{localStorage.setItem('waddle-auto-night','false');}catch(e){}
+    updateAutoNightToggles();
+  }
+  _applyTileOnly(style);
+}
+
+// ── Auto-Night mode ────────────────────────────────────────────────────────────
+// (autoNightMode and autoNightTimer are declared in the STATE block above
+//  so they are available before the map is initialised)
+
+function updateAutoNightToggles(){
+  [$('auto-night-tog'),$('auto-night-tog-m')].forEach(t=>{if(t)t.classList.toggle('on',autoNightMode);});
+}
+
+// Compact USNO sunrise/sunset algorithm. Returns {sunrise,sunset} as Date
+// objects in UTC, or null if location is at polar extremes.
+function sunriseSunset(lat,lon){
+  try{
+    const D2R=Math.PI/180,R2D=180/Math.PI;
+    const now=new Date();
+    const N=Math.ceil((now-new Date(now.getFullYear(),0,0))/86400000);
+    const lnHour=lon/15;
+    function calc(rising){
+      const t=N+((rising?6:18)-lnHour)/24;
+      const M=(0.9856*t-3.289)*D2R;
+      let L=M*R2D+1.916*Math.sin(M)+0.02*Math.sin(2*M)+282.634;
+      L=((L%360)+360)%360;
+      let RA=Math.atan(0.91764*Math.tan(L*D2R))*R2D;
+      RA=((RA%360)+360)%360;
+      const Lq=Math.floor(L/90)*90,RAq=Math.floor(RA/90)*90;
+      RA=(RA+(Lq-RAq))/15;
+      const sinDec=0.39782*Math.sin(L*D2R);
+      const cosDec=Math.cos(Math.asin(sinDec));
+      const cosH=(Math.cos(90.833*D2R)-sinDec*Math.sin(lat*D2R))/(cosDec*Math.cos(lat*D2R));
+      if(cosH<-1||cosH>1)return null;
+      const H=rising?(360-Math.acos(cosH)*R2D)/15:Math.acos(cosH)*R2D/15;
+      const T=H+RA-0.06571*t-6.622;
+      const utH=((T-lnHour)%24+24)%24;
+      const d=new Date();d.setUTCHours(0,0,0,0);
+      return new Date(d.getTime()+utH*3600000);
+    }
+    return{sunrise:calc(true),sunset:calc(false)};
+  }catch(e){return null;}
+}
+
+// Check current solar position and switch tile accordingly.
+// Only runs when auto-night is on and the transit overlay is not active.
+function applyAutoNight(){
+  if(!autoNightMode||!userLoc||transitOn)return;
+  const[lon,lat]=userLoc;
+  const ss=sunriseSunset(lat,lon);
+  if(!ss||!ss.sunrise||!ss.sunset)return;
+  const now=new Date();
+  const isNight=now>=ss.sunset||now<ss.sunrise;
+  const target=isNight?'dark':'shortbread';
+  if(mapStyle!==target){
+    _applyTileOnly(target);
+    console.log(`[AutoNight] switched to ${target} (sunrise ${ss.sunrise.toLocaleTimeString()}, sunset ${ss.sunset.toLocaleTimeString()})`);
+  }
 }
 
 // ── LIVE NAV HELPERS ──────────────────────────────────────────────────────────
@@ -1334,6 +1412,19 @@ function updateNavLive(la,lo,speedMs){
   if(speedMs!=null&&speedMs>=0){
     const mph=Math.round(speedMs*2.23694);
     $('current-speed-display').textContent=`${mph} mph`;
+    // Speed limit sign
+    const limit=stepSpeedLimits[sIdx]??null;
+    const sign=$('speed-limit-sign');
+    if(limit!=null&&sign){
+      $('speed-limit-val').textContent=limit;
+      sign.classList.remove('hidden');
+      // Border color: red=normal, amber=over limit, bright red=significantly over
+      if(mph>limit+10) sign.style.borderColor='#ef4444';
+      else if(mph>limit) sign.style.borderColor='#f59e0b';
+      else sign.style.borderColor='#c00';
+    } else if(sign){
+      sign.classList.add('hidden');
+    }
   }
   if(navFollowing)map.panTo([la,lo],{animate:true,duration:0.8,easeLinearity:0.5});
   const[dLo,dLa]=dest.coords;
@@ -1350,6 +1441,11 @@ if(navigator.geolocation){
   navigator.geolocation.watchPosition(p=>{
     const{latitude:la,longitude:lo,speed:spd}=p.coords;
     userLoc=[lo,la];
+    // First GPS fix: run auto-night immediately and start the 60-second check loop
+    if(!autoNightTimer){
+      applyAutoNight();
+      autoNightTimer=setInterval(applyAutoNight,60000);
+    }
     const ll=[la,lo];
     if(!userMarker){
       userMarker=L.circleMarker(ll,{radius:9,fillColor:'#06d6a0',color:'#fff',weight:3,fillOpacity:1}).addTo(map);
@@ -1512,6 +1608,28 @@ function drawClosureLine(coords,meta,popupHtml){
   gtisMarkers.push(mk);
 }
 
+// Synthesise a short (~130 m) road-oriented line for a single-point incident.
+// Borrows bearing from the nearest GTIS congestion segment that has both endpoints;
+// falls back to a short E-W segment if nothing useful is nearby.
+function synthIncidentLine(lat,lon){
+  const HALF=0.0006; // ~66 m in degrees → 132 m total segment
+  let bestSeg=null,bestDist=Infinity;
+  for(const s of congestionData){
+    if(s.lat==null||s.lat2==null||s.lon==null||s.lon2==null)continue;
+    const d=haversine([s.lat,s.lon],[lat,lon]);
+    if(d<500&&d<bestDist){bestDist=d;bestSeg=s;}
+  }
+  if(bestSeg){
+    const dLat=bestSeg.lat2-bestSeg.lat,dLon=bestSeg.lon2-bestSeg.lon;
+    const len=Math.sqrt(dLat*dLat+dLon*dLon);
+    if(len>0){
+      const uLat=(dLat/len)*HALF,uLon=(dLon/len)*HALF;
+      return[[lat-uLat,lon-uLon],[lat+uLat,lon+uLon]];
+    }
+  }
+  return[[lat,lon-HALF],[lat,lon+HALF]]; // E-W fallback
+}
+
 // Render a single incident as a cluster point marker (fallback when no road geometry).
 function _addIncidentClusterMarker(lat,lon,meta,popupHtml){
   const sz=meta.isClosure?30:28;
@@ -1564,8 +1682,10 @@ function renderGTISMarkers(){
       // Multi-point: draw the feed-provided road geometry as a coloured line
       drawClosureLine(allCoords,meta,popupHtml);
     }else{
-      // Single-point event — show as cluster marker (no road geometry needed).
-      _addIncidentClusterMarker(lat,lon,meta,popupHtml);
+      // Single-point (or near-coincident coords): synthesise a short road-oriented
+      // line so every incident shows the affected road segment, not just a pin.
+      const lineCoords=allCoords.length>=2?allCoords:synthIncidentLine(lat,lon);
+      drawClosureLine(lineCoords,meta,popupHtml);
     }
   });
 
@@ -2168,6 +2288,15 @@ function applyRouteResult(mainData, silent){
   const coords=decodePolyline6(leg.shape);
   const steps=leg.maneuvers.map(m=>vManeuverToStep(m));
   rawManeuvers=leg.maneuvers;
+  // Extract speed limits per step (Valhalla returns km/h with metric units → convert to mph)
+  stepSpeedLimits=leg.maneuvers.map(m=>{
+    if(m.speed_limit==null)return null;
+    // Values ≤ 2 are sentinel "unknown" — ignore them
+    if(m.speed_limit<=2)return null;
+    // Valhalla with units:'kilometers' gives km/h; convert and round to nearest 5 mph
+    const mph=m.speed_limit*0.621371;
+    return Math.round(mph/5)*5;
+  });
 
   routeData={dist:sum.length,dur:sum.time/60,steps};
   routeCoords=coords;
@@ -3262,23 +3391,30 @@ map.on('moveend',()=>{
 
 // ── TRANSIT TOGGLE ────────────────────────────────────────────────────────────
 let transitOn = false;
-const mvpTransitTog = $('mvp-transit-tog');
-if(mvpTransitTog){
-  mvpTransitTog.addEventListener('click', () => {
-    transitOn = !transitOn;
-    mvpTransitTog.classList.toggle('on', transitOn);
-    setTile(transitOn ? 'transit' : 'default');
-  });
+
+function _setTransit(on){
+  transitOn = on;
+  [$('mvp-transit-tog'),$('mvp-transit-tog-m')].forEach(t=>{if(t)t.classList.toggle('on',on);});
+  if(on){
+    _applyTileOnly('transit');
+  } else {
+    // Restore: auto-night decides the style if active, else fall back to shortbread
+    if(autoNightMode) applyAutoNight();
+    else _applyTileOnly(mapStyle==='transit'?'shortbread':mapStyle);
+  }
 }
-document.querySelectorAll('#mvp-style-grid .mvp-tile').forEach(b => {
-  b.addEventListener('click', () => {
-    transitOn = false;
-    if(mvpTransitTog) mvpTransitTog.classList.remove('on');
+
+const mvpTransitTog = $('mvp-transit-tog');
+if(mvpTransitTog) mvpTransitTog.addEventListener('click',()=>_setTransit(!transitOn));
+
+document.querySelectorAll('#mvp-style-grid .mvp-tile').forEach(b=>{
+  b.addEventListener('click',()=>{
+    transitOn=false;
+    [$('mvp-transit-tog'),$('mvp-transit-tog-m')].forEach(t=>{if(t)t.classList.remove('on');});
   });
 });
 
 // ── LIVE TRAFFIC TOGGLE ───────────────────────────────────────────────────────
-// Desktop + mobile traffic toggles both call the same enable/disable functions
 [$('mvp-traffic-tog'),$('mvp-traffic-tog-m')].forEach(tog=>{
   if(!tog)return;
   tog.addEventListener('click',()=>{
@@ -3287,16 +3423,22 @@ document.querySelectorAll('#mvp-style-grid .mvp-tile').forEach(b => {
   });
 });
 
-// Mobile transit toggle (mirrors desktop mvp-transit-tog behaviour)
+// Mobile transit toggle
 const mvpTransitTogM=$('mvp-transit-tog-m');
-if(mvpTransitTogM){
-  mvpTransitTogM.addEventListener('click',()=>{
-    transitOn=!transitOn;
-    $('mvp-transit-tog').classList.toggle('on',transitOn);
-    mvpTransitTogM.classList.toggle('on',transitOn);
-    setTile(transitOn?'transit':'default');
+if(mvpTransitTogM) mvpTransitTogM.addEventListener('click',()=>_setTransit(!transitOn));
+
+// ── AUTO-NIGHT TOGGLES ────────────────────────────────────────────────────────
+[$('auto-night-tog'),$('auto-night-tog-m')].forEach(tog=>{
+  if(!tog)return;
+  tog.addEventListener('click',()=>{
+    autoNightMode=!autoNightMode;
+    try{localStorage.setItem('waddle-auto-night',String(autoNightMode));}catch(e){}
+    updateAutoNightToggles();
+    if(autoNightMode) applyAutoNight();
   });
-}
+});
+// Sync initial toggle state from saved preference
+updateAutoNightToggles();
 
 
 // ══════════════════════════════════════════════════════════════════════════════
