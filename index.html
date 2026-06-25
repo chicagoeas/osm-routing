@@ -3845,6 +3845,140 @@ async function fetchBusRouteGeometry(routeRef,fromLat,fromLon,toLat,toLon){
 // ── Bus→Train competitive routing ─────────────────────────────────────────────
 // Evaluates taking a bus to a better-connected L station rather than walking
 // to the nearest L regardless of which line it serves.
+// Bus → Train A → (platform transfer) → Train B → Walk
+// Solves e.g. Bus 77 → Belmont(Red) → Red Line N → Howard → Yellow Line → Skokie
+// Called as fallback from findBusTrainOption when no direct bus→one-train works.
+async function findBusTransferTrainOption(la1,lo1,la2,lo2,allDestStns,_originBusStop){
+  const destLines=new Set(allDestStns.flatMap(s=>s.lines));
+  // Find transfer hubs: stations on destLines that also serve other connecting lines.
+  // e.g. Howard (Yellow+Red+Purple) for Yellow Line destinations.
+  const hubs=CTA_L_STATIONS.filter(s=>
+    s.lines.some(l=>destLines.has(l))&&s.lines.length>1
+  );
+  if(!hubs.length) return null;
+
+  // For each hub, find "approach" stations (on a connecting line, within 8 km of user)
+  const boardCandidates=[];
+  for(const hub of hubs){
+    const destConnLine=hub.lines.find(l=>destLines.has(l));
+    const approachLines=hub.lines.filter(l=>!destLines.has(l));
+    for(const approachLine of approachLines){
+      CTA_L_STATIONS
+        .filter(s=>s.lines.includes(approachLine)&&s.mapid!==hub.mapid)
+        .map(s=>({...s,dOrig:haversine([la1,lo1],[s.lat,s.lon]),hub,approachLine,destConnLine}))
+        .filter(s=>s.dOrig>300&&s.dOrig<8000
+          // board station must be "on the way" — closer to hub than user is
+          &&haversine([s.lat,s.lon],[hub.lat,hub.lon])<haversine([la1,lo1],[hub.lat,hub.lon]))
+        .forEach(s=>boardCandidates.push(s));
+    }
+  }
+  if(!boardCandidates.length) return null;
+  boardCandidates.sort((a,b)=>a.dOrig-b.dOrig);
+
+  // Fetch origin bus stop predictions once (shared across iterations)
+  let _obPrd=[];
+  if(_originBusStop?.stpid){
+    try{const p=await fetchCTABusPredictions(_originBusStop.stpid);_obPrd=p;}catch(e){}
+  }
+  const _rtAbbrev={Brown:'Brn',Green:'G',Orange:'Org',Purple:'P',Yellow:'Y'};
+  const _now=Date.now();
+
+  for(const boardStn of boardCandidates.slice(0,6)){
+    const{hub,approachLine,destConnLine}=boardStn;
+    // Exit station: closest on destConnLine to final destination (not the hub itself)
+    const dStn=allDestStns
+      .filter(d=>d.lines.includes(destConnLine)&&d.mapid!==hub.mapid)
+      .sort((a,b)=>haversine([a.lat,a.lon],[la2,lo2])-haversine([b.lat,b.lon],[la2,lo2]))[0];
+    if(!dStn) continue;
+    // Hub must be closer to destination than board station (correct direction of travel)
+    if(haversine([hub.lat,hub.lon],[la2,lo2])>=haversine([boardStn.lat,boardStn.lon],[la2,lo2])) continue;
+
+    // Live arrivals for both train legs in parallel
+    let trainWait1=5,trainWait2=5;
+    const[etas1,etas2]=await Promise.allSettled([
+      fetchCTAArrivals(boardStn.mapid),
+      fetchCTAArrivals(hub.mapid)
+    ]);
+    const rt1=_rtAbbrev[approachLine]||approachLine;
+    const rt2=_rtAbbrev[destConnLine]||destConnLine;
+    const arr1=(etas1.status==='fulfilled'?etas1.value:[]).filter(e=>e.rt===rt1||e.rt===approachLine);
+    const arr2=(etas2.status==='fulfilled'?etas2.value:[]).filter(e=>e.rt===rt2||e.rt===destConnLine);
+    if(arr1.length){const t=parseCTATime(arr1[0].arrT);if(t)trainWait1=Math.max(0,Math.round((t-_now)/60000));}
+    if(arr2.length){const t=parseCTATime(arr2[0].arrT);if(t)trainWait2=Math.max(2,Math.round((t-_now)/60000));}
+
+    // Find nearest bus stop at the board station (for accurate bus-leg endpoint)
+    const _bbStops=await fetchNearbyBusStops(boardStn.lat,boardStn.lon,400);
+    const _boardBusStop=_bbStops.find(s=>/^\d+$/.test(s.stpid))||_bbStops[0]||null;
+    const busFromLat=_originBusStop?_originBusStop.lat:la1;
+    const busFromLon=_originBusStop?_originBusStop.lon:lo1;
+    const busToLat=_boardBusStop?_boardBusStop.lat:boardStn.lat;
+    const busToLon=_boardBusStop?_boardBusStop.lon:boardStn.lon;
+
+    // Smart bus route: try each route with live predictions, pick soonest with valid geometry
+    const _rMap=new Map();
+    for(const p of _obPrd){if(p.rt&&!_rMap.has(p.rt))_rMap.set(p.rt,p);}
+    for(const r of (_originBusStop?.route_ref||'').split(';')){const rt=r.trim();if(rt&&!_rMap.has(rt))_rMap.set(rt,null);}
+    let busCoords=[[busFromLat,busFromLon],[busToLat,busToLon]];
+    let busRouteLabel='Bus → '+boardStn.name,busApprox=true,busWaitMin=5;
+    for(const[rt,p] of [..._rMap.entries()].slice(0,4)){
+      const t=p?parseCTABusTime(p.prdtm):null;
+      const wait=t?Math.max(0,Math.round((t-_now)/60000)):5;
+      if(wait>25) continue;
+      try{
+        const coords=await fetchBusRouteGeometry(rt,busFromLat,busFromLon,busToLat,busToLon);
+        if(coords.length>=3){busCoords=coords;busRouteLabel='Route '+rt+' Bus';busApprox=false;busWaitMin=wait;break;}
+      }catch(e){}
+    }
+    if(busCoords.length<3){
+      try{const wr=await getWalkLeg(busFromLon,busFromLat,busToLon,busToLat);if(wr.coords.length>=2)busCoords=wr.coords;}catch{}
+    }
+
+    const busRideMin=Math.max(4,Math.round((boardStn.dOrig/1000)/18*60));
+    const ride1Min=Math.max(3,Math.round((haversine([boardStn.lat,boardStn.lon],[hub.lat,hub.lon])/1000)/35*60));
+    const ride2Min=Math.max(3,Math.round((haversine([hub.lat,hub.lon],[dStn.lat,dStn.lon])/1000)/35*60));
+    const c1=CTA_LINE_COLORS[approachLine]||'#2563eb';
+    const c2=CTA_LINE_COLORS[destConnLine]||'#2563eb';
+    const destNm1=arr1.length&&arr1[0].destNm?arr1[0].destNm:hub.name;
+    const destNm2=arr2.length&&arr2[0].destNm?arr2[0].destNm:dStn.name;
+
+    const[walkToBus,walkFromBusToStn,walkOut,track1,track2]=await Promise.all([
+      _originBusStop?getWalkLeg(lo1,la1,_originBusStop.lon,_originBusStop.lat):Promise.resolve({coords:[[la1,lo1]],dur:0,dist:0}),
+      _boardBusStop?getWalkLeg(_boardBusStop.lon,_boardBusStop.lat,boardStn.lon,boardStn.lat):Promise.resolve({coords:[[boardStn.lat,boardStn.lon]],dur:0,dist:0}),
+      getWalkLeg(dStn.lon,dStn.lat,lo2,la2),
+      fetchRailGeometry(boardStn,hub,approachLine+' Line'),
+      fetchRailGeometry(hub,dStn,destConnLine+' Line')
+    ]);
+    const busTotalDur=(walkToBus.dur||0)+busWaitMin+busRideMin+(walkFromBusToStn.dur||0);
+    const busTotalDist=(walkToBus.dist||0)+(walkFromBusToStn.dist||0);
+
+    return{
+      type:'transit',
+      legs:[
+        ...(_originBusStop?[{type:'walk',from:'Your location',to:_originBusStop.name,
+          dur:walkToBus.dur,dist:walkToBus.dist,coords:walkToBus.coords}]:[]),
+        {type:'bus',from:_originBusStop?_originBusStop.name:'Your location',
+         to:_boardBusStop?_boardBusStop.name:boardStn.name,
+         exitAt:_boardBusStop?_boardBusStop.name:boardStn.name,
+         line:busRouteLabel,color:'#f97316',waitMin:busWaitMin,dur:busRideMin,
+         coords:busCoords,approx:busApprox},
+        ...(_boardBusStop?[{type:'walk',from:_boardBusStop.name,to:boardStn.name,
+          dur:walkFromBusToStn.dur,dist:walkFromBusToStn.dist,coords:walkFromBusToStn.coords}]:[]),
+        {type:'train',from:boardStn.name,to:destNm1,exitAt:hub.name,
+         line:approachLine+' Line',color:c1,waitMin:trainWait1,dur:ride1Min,coords:track1},
+        {type:'transfer',from:hub.name,to:hub.name,dur:2,dist:0.1,
+         coords:[[hub.lat,hub.lon],[hub.lat,hub.lon]]},
+        {type:'train',from:hub.name,to:destNm2,exitAt:dStn.name,
+         line:destConnLine+' Line',color:c2,waitMin:trainWait2,dur:ride2Min,coords:track2},
+        {type:'walk',from:dStn.name,to:dest.name.split(',')[0],
+         dur:walkOut.dur,dist:walkOut.dist,coords:walkOut.coords}
+      ],
+      totalDur:busTotalDur+trainWait1+ride1Min+2+trainWait2+ride2Min+walkOut.dur,
+      totalDist:busTotalDist+walkOut.dist
+    };
+  }
+  return null;
+}
+
 // Example: 60618→Uptown: bus 77 (Belmont) → Belmont Red beats Blue→transfer→Red
 async function findBusTrainOption(la1,lo1,la2,lo2,allDestStns){
   const destLines=new Set(allDestStns.flatMap(s=>s.lines));
@@ -3860,6 +3994,11 @@ async function findBusTrainOption(la1,lo1,la2,lo2,allDestStns){
   // Fetch origin bus stops once (shared across all candidate iterations)
   const _obStops=await fetchNearbyBusStops(la1,lo1,600);
   const _originBusStop=_obStops.find(s=>/^\d+$/.test(s.stpid))||_obStops[0]||null;
+  // Live predictions for origin bus stop — used for accurate bus wait times below
+  let _originBusPrd=[];
+  if(_originBusStop?.stpid){
+    try{_originBusPrd=await fetchCTABusPredictions(_originBusStop.stpid);}catch(e){}
+  }
   for(const boardStn of candidates){
     // Only exit stations that are CLOSER to the destination than the board station itself —
     // this prevents the train from being routed in the wrong direction.
@@ -3903,24 +4042,28 @@ async function findBusTrainOption(la1,lo1,la2,lo2,allDestStns){
       fetchRailGeometry(boardStn,dStn,lineName)
     ]);
 
-    // Bus route geometry — use route_ref from the origin stop, then OSRM street path as fallback
+    // Smart bus route: try each route with live predictions, pick soonest with valid geometry
+    const _bRMap=new Map();
+    for(const p of _originBusPrd){if(p.rt&&!_bRMap.has(p.rt))_bRMap.set(p.rt,p);}
+    for(const r of (_originBusStop?.route_ref||'').split(';')){const rt=r.trim();if(rt&&!_bRMap.has(rt))_bRMap.set(rt,null);}
+    const _bNow=Date.now();
     let busCoords=[[busFromLat,busFromLon],[busToLat,busToLon]];
-    let busRouteLabel='Bus → '+boardStn.name;
-    let busApprox=true;
-    const busRouteRef=_originBusStop?.route_ref?.split(';')[0]?.trim()||null;
-    if(busRouteRef){
+    let busRouteLabel='Bus → '+boardStn.name,busApprox=true,busWaitMin=5;
+    for(const[rt,p] of [..._bRMap.entries()].slice(0,4)){
+      const t=p?parseCTABusTime(p.prdtm):null;
+      const wait=t?Math.max(0,Math.round((t-_bNow)/60000)):5;
+      if(wait>25) continue;
       try{
-        busCoords=await fetchBusRouteGeometry(busRouteRef,busFromLat,busFromLon,busToLat,busToLon);
-        busRouteLabel='Route '+busRouteRef+' Bus';
-        busApprox=false;
+        const coords=await fetchBusRouteGeometry(rt,busFromLat,busFromLon,busToLat,busToLon);
+        if(coords.length>=3){busCoords=coords;busRouteLabel='Route '+rt+' Bus';busApprox=false;busWaitMin=wait;break;}
       }catch(e){}
     }
-    // Fallback: use OSRM walk path so at least streets are followed (better than straight line)
+    // Fallback: OSRM street path (better than straight line)
     if(busCoords.length<3){
       try{const wr=await getWalkLeg(busFromLon,busFromLat,busToLon,busToLat);if(wr.coords.length>=2)busCoords=wr.coords;}catch{}
     }
 
-    const busTotalDur=(walkToBus.dur||0)+busRideMin+(walkFromBusToStn.dur||0);
+    const busTotalDur=(walkToBus.dur||0)+busWaitMin+busRideMin+(walkFromBusToStn.dur||0);
     const busTotalDist=(walkToBus.dist||0)+(walkFromBusToStn.dist||0);
     return{
       type:'transit',
@@ -3931,7 +4074,7 @@ async function findBusTrainOption(la1,lo1,la2,lo2,allDestStns){
          from:_originBusStop?_originBusStop.name:'Your location',
          to:_boardBusStop?_boardBusStop.name:boardStn.name,
          exitAt:_boardBusStop?_boardBusStop.name:boardStn.name,
-         line:busRouteLabel,color:'#f97316',waitMin:5,dur:busRideMin,
+         line:busRouteLabel,color:'#f97316',waitMin:busWaitMin,dur:busRideMin,
          coords:busCoords,approx:busApprox},
         ...(_boardBusStop?[{type:'walk',from:_boardBusStop.name,to:boardStn.name,
           dur:walkFromBusToStn.dur,dist:walkFromBusToStn.dist,coords:walkFromBusToStn.coords}]:[]),
@@ -3940,10 +4083,16 @@ async function findBusTrainOption(la1,lo1,la2,lo2,allDestStns){
         {type:'walk',from:dStn.name,to:dest.name.split(',')[0],
          dur:walkOut.dur,dist:walkOut.dist,coords:walkOut.coords}
       ],
-      totalDur:5+busTotalDur+trainWait+rideMin+walkOut.dur,
+      totalDur:busTotalDur+trainWait+rideMin+walkOut.dur,
       totalDist:busTotalDist+walkOut.dist
     };
   }
+  // ── Fallback: Bus → Train → Transfer → Train (e.g. Bus 77 → Red → Howard → Yellow → Skokie) ──
+  try{
+    const xfer=await findBusTransferTrainOption(la1,lo1,la2,lo2,allDestStns,_originBusStop);
+    if(xfer) return xfer;
+  }catch(e){ console.warn('[BusTransferTrain]',e); }
+
   return null;
 }
 
@@ -4056,7 +4205,21 @@ async function fetchTransitRoute(silent=false){
       const allDestIncFar=[...destStns,...destStnsFar];
       try{
         const tr=await findBestTransferRoute(allOrigIncFar,allDestIncFar,la1,lo1,la2,lo2);
-        if(tr) bestTrainOption=tr;
+        if(tr){
+          // If the opening walk is >1.5 km the user actually needs a bus, not a marathon.
+          // Replace that walk leg with a generic bus so the route is viable.
+          const firstLeg=tr.legs[0];
+          if(firstLeg?.type==='walk'&&(firstLeg.dist||0)>1.5){
+            const firstStn=allOrigIncFar.find(s=>s.name===firstLeg.to)||allOrigIncFar[0];
+            const busRideMin=Math.max(6,Math.round(((firstStn?.d||firstLeg.dist*1000)/1000)/18*60));
+            tr.legs[0]={type:'bus',from:'Your location',to:firstLeg.to,
+              line:'Bus to '+firstLeg.to,color:'#f97316',
+              waitMin:5,dur:busRideMin,
+              coords:[[la1,lo1],[firstStn?.lat||la1,firstStn?.lon||lo1]],approx:true};
+            tr.totalDur=(tr.totalDur||0)-(firstLeg.dur||0)+5+busRideMin;
+          }
+          bestTrainOption=tr;
+        }
       }catch(e){ console.warn('[Transfer far-far routing]',e); }
     }
 
@@ -4231,19 +4394,34 @@ async function fetchTransitRoute(silent=false){
         const busEndCoord=bsDest?[bsDest.lat,bsDest.lon]:[la2,lo2];
         const busEndName=bsDest?bsDest.name:dest.name.split(',')[0];
 
-        const _pureRouteRef=nextPrd?.rt||bs.route_ref?.split(';')[0]?.trim()||null;
-        let busRouteCoords=[[bs.lat,bs.lon],busEndCoord];
-        if(_pureRouteRef){
-          try{ busRouteCoords=await fetchBusRouteGeometry(_pureRouteRef,bs.lat,bs.lon,la2,lo2); }
-          catch(e){ console.warn('[BusGeom]',e.message); }
+        // ── Smart route selection ─────────────────────────────────────────────────
+        // Try each route at this stop (live predictions first, then static route_ref).
+        // Pick the one that (a) actually has geometry to the destination AND
+        // (b) arrives soonest — so "Route X in 2 min" beats "Route Y in 20 min"
+        // even if Route Y was the default first prediction.
+        const _rMap=new Map();
+        for(const p of prd){if(p.rt&&!_rMap.has(p.rt))_rMap.set(p.rt,p);}
+        for(const r of (bs.route_ref||'').split(';')){const rt=r.trim();if(rt&&!_rMap.has(rt))_rMap.set(rt,null);}
+        const _sNow=Date.now();
+        let busRouteCoords=null;
+        for(const[rt,p] of [..._rMap.entries()].slice(0,5)){
+          const t=p?parseCTABusTime(p.prdtm):null;
+          const wait=t?Math.max(0,Math.round((t-_sNow)/60000)):5;
+          if(wait>25) continue;
+          try{
+            const coords=await fetchBusRouteGeometry(rt,bs.lat,bs.lon,la2,lo2);
+            if(coords.length>=3){
+              busRouteCoords=coords;
+              busWait=wait;
+              rtLabel='Route '+rt+(p?.rtdir?' – '+p.rtdir:'');
+              break; // predictions are sorted by time → first valid = best
+            }
+          }catch(e){}
         }
-        // If the bus route geometry is just a 2-point straight line AND the trip is
-        // longer than 2.5 km, the bus does NOT actually serve this destination.
-        // Return null so the bus→train option (findBusTrainOption) can win instead —
-        // e.g. Route 76 should take you to the Blue Line stop, not pretend to go
-        // all the way to a destination 6 km away.
+        if(!busRouteCoords) busRouteCoords=[[bs.lat,bs.lon],busEndCoord];
+        // No bus serves this destination and the trip is long → let bus→train routing win
         if(busRouteCoords.length<3&&straightDist>2500) return null;
-        // For short trips, try an OSRM street-path so at least the geometry follows roads.
+        // Short trip: OSRM street path is better than a straight line
         if(busRouteCoords.length<3){
           try{const wr=await getWalkLeg(bs.lon,bs.lat,lo2,la2);if(wr.coords.length>=2)busRouteCoords=wr.coords;}catch{}
         }
