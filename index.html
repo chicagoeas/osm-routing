@@ -4237,11 +4237,14 @@ async function fetchTransitRoute(silent=false){
           try{ busRouteCoords=await fetchBusRouteGeometry(_pureRouteRef,bs.lat,bs.lon,la2,lo2); }
           catch(e){ console.warn('[BusGeom]',e.message); }
         }
-        // OSRM street-path fallback — only for short trips where the bus clearly
-        // covers the distance. For long trips (> 3 km) where geometry was rejected
-        // (the bus doesn't reach the destination) this would produce a hiking trail
-        // "bus" route, so we skip it.
-        if(busRouteCoords.length<3&&straightDist<3000){
+        // If the bus route geometry is just a 2-point straight line AND the trip is
+        // longer than 2.5 km, the bus does NOT actually serve this destination.
+        // Return null so the bus→train option (findBusTrainOption) can win instead —
+        // e.g. Route 76 should take you to the Blue Line stop, not pretend to go
+        // all the way to a destination 6 km away.
+        if(busRouteCoords.length<3&&straightDist>2500) return null;
+        // For short trips, try an OSRM street-path so at least the geometry follows roads.
+        if(busRouteCoords.length<3){
           try{const wr=await getWalkLeg(bs.lon,bs.lat,lo2,la2);if(wr.coords.length>=2)busRouteCoords=wr.coords;}catch{}
         }
         return{
