@@ -3748,20 +3748,10 @@ async function fetchBusRouteGeometry(routeRef,fromLat,fromLon,toLat,toLon){
   const ck=`bus-${routeRef}-${Math.round(fromLat*100)}-${Math.round(toLat*100)}`;
   if(_busGeomCache.has(ck)) return _busGeomCache.get(ck);
 
-  // localStorage cache (30-minute TTL) — bus routes change infrequently within a session
-  const lsKey='wm:busgeom:'+ck;
-  try{
-    const stored=localStorage.getItem(lsKey);
-    if(stored){
-      const{ts,coords}=JSON.parse(stored);
-      if(Date.now()-ts<1800000&&coords?.length>=2){
-        _busGeomCache.set(ck,coords);
-        return coords;
-      }
-    }
-  }catch{}
-
-  // ── Static CTA bus route shapes (instant, no network) ──────────────────────
+  // ── Static CTA bus route shapes (instant, no network, always preferred) ────
+  // Must be checked BEFORE the localStorage cache because a stale localStorage
+  // entry (e.g. an old OSRM walk path) would otherwise shadow the correct
+  // GTFS shape data from CTA_BUS_SHAPES.
   if(window.CTA_BUS_SHAPES&&window.CTA_BUS_SHAPES[routeRef]){
     const shape=window.CTA_BUS_SHAPES[routeRef];
     const pts=shape.coords;
@@ -3774,6 +3764,19 @@ async function fetchBusRouteGeometry(routeRef,fromLat,fromLon,toLat,toLon){
       if(slice.length>=2){_busGeomCache.set(ck,slice);return slice;}
     }
   }
+
+  // localStorage cache (30-minute TTL) — only for Overpass-fetched geometries
+  const lsKey='wm:busgeom:'+ck;
+  try{
+    const stored=localStorage.getItem(lsKey);
+    if(stored){
+      const{ts,coords}=JSON.parse(stored);
+      if(Date.now()-ts<1800000&&coords?.length>=2){
+        _busGeomCache.set(ck,coords);
+        return coords;
+      }
+    }
+  }catch{}
 
   const pad=0.025;
   const bbox=`${Math.min(fromLat,toLat)-pad},${Math.min(fromLon,toLon)-pad},${Math.max(fromLat,toLat)+pad},${Math.max(fromLon,toLon)+pad}`;
@@ -4416,7 +4419,7 @@ async function fetchTransitRoute(silent=false){
           const wait=t?Math.max(0,Math.round((t-_sNow)/60000)):5;
           if(wait>25) continue;
           try{
-            const coords=await fetchBusRouteGeometry(rt,bs.lat,bs.lon,busEndCoord[0],busEndCoord[1]);
+            const coords=await fetchBusRouteGeometry(rt,bs.lat,bs.lon,la2,lo2);
             if(coords.length>=3){
               busRouteCoords=coords;
               busWait=wait;
