@@ -4416,7 +4416,7 @@ async function fetchTransitRoute(silent=false){
           const wait=t?Math.max(0,Math.round((t-_sNow)/60000)):5;
           if(wait>25) continue;
           try{
-            const coords=await fetchBusRouteGeometry(rt,bs.lat,bs.lon,la2,lo2);
+            const coords=await fetchBusRouteGeometry(rt,bs.lat,bs.lon,busEndCoord[0],busEndCoord[1]);
             if(coords.length>=3){
               busRouteCoords=coords;
               busWait=wait;
@@ -4525,6 +4525,22 @@ function applyTransitResult(option,silent){
     else if(leg.type==='train'){color=leg.color||'#2563eb';weight=7;dash=null;}
     else{color=leg.color||'#f97316';weight=5;dash=leg.approx?'8,12':'8,6';}
 
+    // For train legs: snap geometry endpoints to exact station coordinates BEFORE
+    // drawing the polyline so the rendered line runs exactly from circle to circle.
+    let sCoord=coords[0], eCoord=coords[coords.length-1];
+    if(leg.type==='train'&&coords.length>=2){
+      const _findStn=name=>{
+        if(!name)return null;
+        return CTA_L_STATIONS.find(s=>s.name===name)
+            || CTA_L_STATIONS.find(s=>s.name===name.replace(/\s*\(.*\)/,'').trim())
+            || null;
+      };
+      const bStn=_findStn(leg.from);
+      const eStn=_findStn(leg.exitAt||leg.to);
+      if(bStn){sCoord=[bStn.lat,bStn.lon];coords[0]=sCoord;}
+      if(eStn){eCoord=[eStn.lat,eStn.lon];coords[coords.length-1]=eCoord;}
+    }
+
     const poly=L.polyline(coords,{color,weight,opacity:.9,lineJoin:'round',...(dash?{dashArray:dash}:{})}).addTo(map);
     if(leg.type==='train'){
       const outline=L.polyline(coords,{color:'rgba(0,0,0,0.25)',weight:9,opacity:1,lineJoin:'round'}).addTo(map);
@@ -4534,23 +4550,6 @@ function applyTransitResult(option,silent){
 
     // Board / exit circle markers for transit legs
     if((leg.type==='train'||leg.type==='bus')&&coords.length>=2){
-      // For train legs, look up the actual station coordinates so markers sit precisely
-      // on the station dot rather than on the nearest geometry slice endpoint.
-      let sCoord=coords[0], eCoord=coords[coords.length-1];
-      if(leg.type==='train'){
-        const _findStn=name=>{
-          if(!name)return null;
-          return CTA_L_STATIONS.find(s=>s.name===name)
-              || CTA_L_STATIONS.find(s=>s.name===name.replace(/\s*\(.*\)/,'').trim())
-              || null;
-        };
-        const bStn=_findStn(leg.from);
-        const eStn=_findStn(leg.exitAt||leg.to);
-        // Snap both the circle coordinate AND the geometry endpoint so the line
-        // runs exactly from circle to circle with no gap.
-        if(bStn){sCoord=[bStn.lat,bStn.lon];coords[0]=sCoord;}
-        if(eStn){eCoord=[eStn.lat,eStn.lon];coords[coords.length-1]=eCoord;}
-      }
       const[sLa,sLo]=sCoord;
       const[eLa,eLo]=eCoord;
       const boardIcon=leg.type==='train'?'🚉':'🚌';
