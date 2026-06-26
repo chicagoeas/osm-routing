@@ -703,9 +703,13 @@
 <div id="map-view-popup">
   <div class="mvp-title">Map view</div>
   <div class="mvp-grid" id="mvp-style-grid">
-    <button class="mvp-tile on" data-s="stadia">
+    <button class="mvp-tile" data-s="stadia">
+      <div class="mvp-thumb" style="background:linear-gradient(135deg,#3d7a4a,#5aa668)">🥾</div>
+      <span>Outdoors</span>
+    </button>
+    <button class="mvp-tile on" data-s="osm_bright">
       <div class="mvp-thumb" style="background:linear-gradient(135deg,#4a6fa5,#7fa8d4)">🗺️</div>
-      <span>Stadia</span>
+      <span>OSM Bright</span>
     </button>
     <button class="mvp-tile" data-s="stadia_dark">
       <div class="mvp-thumb" style="background:linear-gradient(135deg,#1e293b,#0f172a)">🌑</div>
@@ -732,8 +736,8 @@
     <div class="tog" id="mvp-traffic-tog"></div>
   </div>
   <div class="mvp-tog-row">
-    <span>🌙 Auto night</span>
-    <div class="tog" id="auto-night-tog"></div>
+    <span>🗺️ Auto transit map</span>
+    <div class="tog" id="transit-auto-map-tog"></div>
   </div>
 </div>
 
@@ -1000,8 +1004,8 @@
         <div class="tog" id="mvp-traffic-tog-m"></div>
       </div>
       <div class="ss-row">
-        <div><div class="ss-row-lbl">🌙 Auto night</div><div class="ss-row-sub">Switch to dark map at sunset</div></div>
-        <div class="tog" id="auto-night-tog-m"></div>
+        <div><div class="ss-row-lbl">🗺️ Auto transit map</div><div class="ss-row-sub">Switch to transit map when using transit directions</div></div>
+        <div class="tog" id="transit-auto-map-tog-m"></div>
       </div>
     </div>
     <div class="ss-sec">
@@ -1074,10 +1078,11 @@ const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright" target="_
 const STADIA_ATTR = '© <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> © <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> © '+OSM_ATTR;
 const STADIA_KEY = 'e7b59d98-4525-4540-ac1d-caa17c9f10d6';
 const TILES = {
-  stadia:      { type:'vector', styleUrl:`https://tiles.stadiamaps.com/styles/alidade_smooth.json?api_key=${STADIA_KEY}`, attr:STADIA_ATTR, label:'Stadia', icon:'🗺️', bg:'#4a6fa5' },
+  stadia:      { type:'vector', styleUrl:`https://tiles.stadiamaps.com/styles/outdoors.json?api_key=${STADIA_KEY}`, attr:STADIA_ATTR, label:'Outdoors', icon:'🥾', bg:'#3d7a4a' },
   stadia_dark: { type:'vector', styleUrl:`https://tiles.stadiamaps.com/styles/alidade_smooth_dark.json?api_key=${STADIA_KEY}`, attr:STADIA_ATTR, label:'Dark', icon:'🌑', bg:'#1e293b' },
+  osm_bright:  { type:'vector', styleUrl:`https://tiles.stadiamaps.com/styles/osm_bright.json?api_key=${STADIA_KEY}`, attr:STADIA_ATTR, label:'OSM Bright', icon:'🗺️', bg:'#4a6fa5' },
   satellite:   { url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr:'© <a href="https://www.esri.com/" target="_blank">Esri</a>, Earthstar Geographics', opts:{maxZoom:19}, label:'Sat', icon:'🛰️', bg:'#18181b' },
-  terrain:     { url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attr:OSM_ATTR+', © <a href="https://opentopomap.org" target="_blank">OpenTopoMap</a>', opts:{maxZoom:17,subdomains:'abc'}, label:'Terrain', icon:'⛰️', bg:'#2d5a1b' },
+  terrain:     { type:'vector', styleUrl:`https://tiles.stadiamaps.com/styles/stamen_terrain.json?api_key=${STADIA_KEY}`, attr:STADIA_ATTR+', Map tiles by <a href="http://stamen.com">Stamen Design</a>', label:'Terrain', icon:'⛰️', bg:'#2d5a1b' },
   transit:     { url:'https://tile.memomaps.de/tilegen/{z}/{x}/{y}.png', attr:OSM_ATTR+', © <a href="https://memomaps.de/" target="_blank">memomaps</a>', opts:{maxZoom:17}, label:'Transit', icon:'🚌', bg:'#1d4ed8' },
 };
 
@@ -1085,8 +1090,7 @@ const TILES = {
 let map, tileLayer, userMarker, destMarker, routePoly, traveledPoly;
 let userLoc = null, dest = null, routeData = null, routeCoords = [];
 let mapStyle = 'stadia', reportMode = false, formPos = null, alertInc = null;
-let autoNightMode=(()=>{try{const v=localStorage.getItem('waddle-auto-night');return v===null?true:v==='true';}catch(e){return true;}})();
-let autoNightTimer=null;
+let transitAutoMap=(()=>{try{const v=localStorage.getItem('waddle-transit-auto-map');return v==='true';}catch(e){return false;}})();
 const S = { mode:'driving', avoid:{ highways:false, ferries:false, unpaved:false, tolls:false } };
 // ── GTIS live traffic state ───────────────────────────────────────────────────
 let gtisIncidents = [], gtisMarkers = [], gtisLayerOn = false, gtisTimer = null;
@@ -1246,8 +1250,8 @@ function isDesktop(){ return window.innerWidth >= 680; }
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
 map=L.map('map',{center:[41.8781,-87.6298],zoom:13,zoomControl:false});
-// Initialize with Stadia Alidade Smooth tiles
-setTile('stadia');
+// Initialize with OSM Bright (default mode is driving)
+setTile('osm_bright');
 
 map.on('click',e=>{
   if(reportMode){formPos=[e.latlng.lat,e.latlng.lng];setReport(false);openForm();return;}
@@ -1280,70 +1284,13 @@ function _applyTileOnly(style){
   updateMapViewPopupSelection();
 }
 
-// Manual user tile pick. Turns off auto-night unless the user is just toggling
-// the transit overlay (which is a layer, not a style preference).
+// Manual user tile pick.
 function setTile(style){
-  if(style!=='transit'){
-    autoNightMode=false;
-    try{localStorage.setItem('waddle-auto-night','false');}catch(e){}
-    updateAutoNightToggles();
-  }
   _applyTileOnly(style);
 }
 
-// ── Auto-Night mode ────────────────────────────────────────────────────────────
-// (autoNightMode and autoNightTimer are declared in the STATE block above
-//  so they are available before the map is initialised)
-
-function updateAutoNightToggles(){
-  [$('auto-night-tog'),$('auto-night-tog-m')].forEach(t=>{if(t)t.classList.toggle('on',autoNightMode);});
-}
-
-// Compact USNO sunrise/sunset algorithm. Returns {sunrise,sunset} as Date
-// objects in UTC, or null if location is at polar extremes.
-function sunriseSunset(lat,lon){
-  try{
-    const D2R=Math.PI/180,R2D=180/Math.PI;
-    const now=new Date();
-    const N=Math.ceil((now-new Date(now.getFullYear(),0,0))/86400000);
-    const lnHour=lon/15;
-    function calc(rising){
-      const t=N+((rising?6:18)-lnHour)/24;
-      const M=(0.9856*t-3.289)*D2R;
-      let L=M*R2D+1.916*Math.sin(M)+0.02*Math.sin(2*M)+282.634;
-      L=((L%360)+360)%360;
-      let RA=Math.atan(0.91764*Math.tan(L*D2R))*R2D;
-      RA=((RA%360)+360)%360;
-      const Lq=Math.floor(L/90)*90,RAq=Math.floor(RA/90)*90;
-      RA=(RA+(Lq-RAq))/15;
-      const sinDec=0.39782*Math.sin(L*D2R);
-      const cosDec=Math.cos(Math.asin(sinDec));
-      const cosH=(Math.cos(90.833*D2R)-sinDec*Math.sin(lat*D2R))/(cosDec*Math.cos(lat*D2R));
-      if(cosH<-1||cosH>1)return null;
-      const H=rising?(360-Math.acos(cosH)*R2D)/15:Math.acos(cosH)*R2D/15;
-      const T=H+RA-0.06571*t-6.622;
-      const utH=((T-lnHour)%24+24)%24;
-      const d=new Date();d.setUTCHours(0,0,0,0);
-      return new Date(d.getTime()+utH*3600000);
-    }
-    return{sunrise:calc(true),sunset:calc(false)};
-  }catch(e){return null;}
-}
-
-// Check current solar position and switch tile accordingly.
-// Only runs when auto-night is on and the transit overlay is not active.
-function applyAutoNight(){
-  if(!autoNightMode||!userLoc||transitOn)return;
-  const[lon,lat]=userLoc;
-  const ss=sunriseSunset(lat,lon);
-  if(!ss||!ss.sunrise||!ss.sunset)return;
-  const now=new Date();
-  const isNight=now>=ss.sunset||now<ss.sunrise;
-  const target=isNight?'stadia_dark':'stadia';
-  if(mapStyle!==target){
-    _applyTileOnly(target);
-    console.log(`[AutoNight] switched to ${target} (sunrise ${ss.sunrise.toLocaleTimeString()}, sunset ${ss.sunset.toLocaleTimeString()})`);
-  }
+function updateTransitAutoMapToggles(){
+  [$('transit-auto-map-tog'),$('transit-auto-map-tog-m')].forEach(t=>{if(t)t.classList.toggle('on',transitAutoMap);});
 }
 
 // ── LIVE NAV HELPERS ──────────────────────────────────────────────────────────
@@ -1440,11 +1387,7 @@ if(navigator.geolocation){
   navigator.geolocation.watchPosition(p=>{
     const{latitude:la,longitude:lo,speed:spd}=p.coords;
     userLoc=[lo,la];
-    // First GPS fix: run auto-night immediately and start the 60-second check loop
-    if(!autoNightTimer){
-      applyAutoNight();
-      autoNightTimer=setInterval(applyAutoNight,60000);
-    }
+    // First GPS fix
     const ll=[la,lo];
     if(!userMarker){
       userMarker=L.circleMarker(ll,{radius:9,fillColor:'#06d6a0',color:'#fff',weight:3,fillOpacity:1}).addTo(map);
@@ -2325,7 +2268,8 @@ function disableGTISLayer(){
   buildTrafficWarn();
 }
 
-// ── ROUTING ───────────────────────────────────────────────────────────────────
+// ── ROUTING ───────────────────────────
+��───────────────────────────────────────
 // Valhalla endpoints tried in order. Both are public FOSSGIS instances with CORS.
 const VALHALLA_ENDPOINTS = [
   'https://valhalla1.openstreetmap.de/route',
@@ -2907,6 +2851,10 @@ $('btn-cancel-route').addEventListener('click',clearNav);
 document.querySelectorAll('.rp-mode').forEach(b=>b.addEventListener('click',()=>{
   S.mode=b.dataset.mode;
   document.querySelectorAll('.rp-mode').forEach(x=>x.classList.toggle('on',x.dataset.mode===S.mode));
+  // Auto-apply mode-appropriate map tile
+  if(S.mode==='foot') _applyTileOnly('stadia');
+  else if(S.mode==='driving') _applyTileOnly('osm_bright');
+  else if(S.mode==='transit'&&transitAutoMap) _applyTileOnly('transit');
   if(dest&&userLoc)fetchRoute();
 }));
 
@@ -3229,10 +3177,7 @@ if(WORKER_URL)setInterval(()=>syncIncidents(true),120000);
   window._splashOverpassReady=function(){};
 })();
 
-// Enable live traffic layer by default.
-// applyZoomMode() inside enableGTISLayer() decides what to load based on zoom level.
-// The periodic refresh timer inside enableGTISLayer() also respects zoom mode.
-enableGTISLayer();
+// Live traffic is off by default. User can enable via the Layers toggle.
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SEARCH HISTORY  +  AMENITY SEARCH  +  SCALE BAR  +  TRANSIT TOGGLE
@@ -3499,11 +3444,11 @@ function _setTransit(on){
   transitOn = on;
   [$('mvp-transit-tog'),$('mvp-transit-tog-m')].forEach(t=>{if(t)t.classList.toggle('on',on);});
   if(on){
-    _applyTileOnly('transit');
+    if(transitAutoMap) _applyTileOnly('transit');
   } else {
-    // Restore: auto-night decides the style if active, else fall back to stadia
-    if(autoNightMode) applyAutoNight();
-    else _applyTileOnly(mapStyle==='transit'?'stadia':mapStyle);
+    // Restore mode-appropriate tile
+    const restore=S.mode==='foot'?'stadia':(S.mode==='transit'?'osm_bright':mapStyle==='transit'?'osm_bright':mapStyle);
+    _applyTileOnly(restore);
   }
 }
 
@@ -3530,18 +3475,22 @@ document.querySelectorAll('#mvp-style-grid .mvp-tile').forEach(b=>{
 const mvpTransitTogM=$('mvp-transit-tog-m');
 if(mvpTransitTogM) mvpTransitTogM.addEventListener('click',()=>_setTransit(!transitOn));
 
-// ── AUTO-NIGHT TOGGLES ────────────────────────────────────────────────────────
-[$('auto-night-tog'),$('auto-night-tog-m')].forEach(tog=>{
+// ── TRANSIT AUTO-MAP TOGGLES ────────────────────────────────────────────────
+[$('transit-auto-map-tog'),$('transit-auto-map-tog-m')].forEach(tog=>{
   if(!tog)return;
   tog.addEventListener('click',()=>{
-    autoNightMode=!autoNightMode;
-    try{localStorage.setItem('waddle-auto-night',String(autoNightMode));}catch(e){}
-    updateAutoNightToggles();
-    if(autoNightMode) applyAutoNight();
+    transitAutoMap=!transitAutoMap;
+    try{localStorage.setItem('waddle-transit-auto-map',String(transitAutoMap));}catch(e){}
+    updateTransitAutoMapToggles();
+    // If transit mode is active, apply/remove transit map immediately
+    if(transitOn){
+      if(transitAutoMap) _applyTileOnly('transit');
+      else _applyTileOnly(S.mode==='foot'?'stadia':'osm_bright');
+    }
   });
 });
 // Sync initial toggle state from saved preference
-updateAutoNightToggles();
+updateTransitAutoMapToggles();
 
 
 // ══════════════════════════════════════════════════════════════════════════════
