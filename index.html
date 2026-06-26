@@ -14,7 +14,6 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -703,9 +702,9 @@
 <div id="map-view-popup">
   <div class="mvp-title">Map view</div>
   <div class="mvp-grid" id="mvp-style-grid">
-    <button class="mvp-tile on" data-s="shortbread">
-      <div class="mvp-thumb" style="background:linear-gradient(135deg,#1d3557,#457b9d)">✨</div>
-      <span>Shortbread</span>
+    <button class="mvp-tile on" data-s="stadia">
+      <div class="mvp-thumb" style="background:linear-gradient(135deg,#4a6fa5,#7fa8d4)">🗺️</div>
+      <span>Stadia</span>
     </button>
     <button class="mvp-tile" data-s="default">
       <div class="mvp-thumb" style="background:linear-gradient(135deg,#166534,#0d2137)">🗺️</div>
@@ -1061,8 +1060,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4/dist/maplibre-gl.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <!-- CTA static bus stop & route shape data (generated from official GTFS) -->
 <script src="cta-bus-data.js"></script>
 <script>
@@ -1071,10 +1068,10 @@ const WORKER_URL = '';
 
 // ── TILES ─────────────────────────────────────────────────────────────────────
 const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors';
-const OFM_ATTR = OSM_ATTR+', © <a href="https://openfreemap.org" target="_blank">OpenFreeMap</a>';
+const STADIA_ATTR = '© <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> © <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> © '+OSM_ATTR;
 const TILES = {
-  shortbread:{ type:'vector', styleUrl:'https://tiles.openfreemap.org/styles/liberty', attr:OFM_ATTR, label:'Shortbread', icon:'✨', bg:'#1d3557' },
-  default:   { url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attr:OSM_ATTR, opts:{maxZoom:19}, label:'Default', icon:'🗺️', bg:'#166534' },
+  stadia:    { url:'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png', attr:STADIA_ATTR, opts:{maxZoom:20}, label:'Stadia', icon:'🗺️', bg:'#4a6fa5' },
+  default:   { url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attr:OSM_ATTR, opts:{maxZoom:19}, label:'Default', icon:'🌐', bg:'#166534' },
   dark:      { url:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', attr:OSM_ATTR+', © <a href="https://carto.com/" target="_blank">CARTO</a>', opts:{maxZoom:19,subdomains:'abcd'}, label:'Dark', icon:'🌑', bg:'#1e293b' },
   light:     { url:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attr:OSM_ATTR+', © <a href="https://carto.com/" target="_blank">CARTO</a>', opts:{maxZoom:19,subdomains:'abcd'}, label:'Light', icon:'☀️', bg:'#b45309' },
   satellite: { url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr:'© <a href="https://www.esri.com/" target="_blank">Esri</a>, Earthstar Geographics', opts:{maxZoom:19}, label:'Sat', icon:'🛰️', bg:'#18181b' },
@@ -1085,7 +1082,7 @@ const TILES = {
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let map, tileLayer, userMarker, destMarker, routePoly, traveledPoly;
 let userLoc = null, dest = null, routeData = null, routeCoords = [];
-let mapStyle = 'shortbread', reportMode = false, formPos = null, alertInc = null;
+let mapStyle = 'stadia', reportMode = false, formPos = null, alertInc = null;
 let autoNightMode=(()=>{try{const v=localStorage.getItem('waddle-auto-night');return v===null?true:v==='true';}catch(e){return true;}})();
 let autoNightTimer=null;
 const S = { mode:'driving', avoid:{ highways:false, ferries:false, unpaved:false, tolls:false } };
@@ -1247,8 +1244,8 @@ function isDesktop(){ return window.innerWidth >= 680; }
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
 map=L.map('map',{center:[41.8781,-87.6298],zoom:13,zoomControl:false});
-// Initialize with Shortbread vector tiles (setTile handles both raster and vector)
-setTile('shortbread');
+// Initialize with Stadia Alidade Smooth tiles
+setTile('stadia');
 
 map.on('click',e=>{
   if(reportMode){formPos=[e.latlng.lat,e.latlng.lng];setReport(false);openForm();return;}
@@ -1270,12 +1267,8 @@ function _applyTileOnly(style){
   mapStyle=style;
   if(tileLayer){map.removeLayer(tileLayer);tileLayer=null;}
   const t=TILES[style];
-  if(t.type==='vector'){
-    tileLayer=L.maplibreGL({style:t.styleUrl,attribution:t.attr}).addTo(map);
-  } else {
-    tileLayer=L.tileLayer(t.url,{attribution:t.attr,...t.opts}).addTo(map);
-    tileLayer.bringToBack();
-  }
+  tileLayer=L.tileLayer(t.url,{attribution:t.attr,...t.opts}).addTo(map);
+  tileLayer.bringToBack();
   renderMapGridMobile();
   renderMapGridDesktop();
   updateMapViewPopupSelection();
@@ -1340,7 +1333,7 @@ function applyAutoNight(){
   if(!ss||!ss.sunrise||!ss.sunset)return;
   const now=new Date();
   const isNight=now>=ss.sunset||now<ss.sunrise;
-  const target=isNight?'dark':'shortbread';
+  const target=isNight?'dark':'stadia';
   if(mapStyle!==target){
     _applyTileOnly(target);
     console.log(`[AutoNight] switched to ${target} (sunrise ${ss.sunrise.toLocaleTimeString()}, sunset ${ss.sunset.toLocaleTimeString()})`);
@@ -3398,9 +3391,9 @@ function _setTransit(on){
   if(on){
     _applyTileOnly('transit');
   } else {
-    // Restore: auto-night decides the style if active, else fall back to shortbread
+    // Restore: auto-night decides the style if active, else fall back to stadia
     if(autoNightMode) applyAutoNight();
-    else _applyTileOnly(mapStyle==='transit'?'shortbread':mapStyle);
+    else _applyTileOnly(mapStyle==='transit'?'stadia':mapStyle);
   }
 }
 
