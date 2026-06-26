@@ -105,8 +105,11 @@
     /* ── Steps (shared) ── */
     .step { display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px; border-radius: 10px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); margin-bottom: 5px; transition: background .2s, border-color .2s; }
     .step.active { border-color: var(--accent-l) !important; background: rgba(37,99,235,0.12) !important; }
-    .step-ic { background: rgba(255,255,255,0.07); padding: 7px 8px; border-radius: 8px; flex-shrink: 0; font-size: 15px; min-width: 34px; text-align: center; line-height: 1.2; font-weight: 700; border: 1px solid rgba(255,255,255,0.07); }
+    .step-ic { background: rgba(255,255,255,0.07); padding: 6px; border-radius: 8px; flex-shrink: 0; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,0.07); }
+    .step-ic svg { width: 22px; height: 22px; }
+    .step-ic svg path, .step-ic svg polygon, .step-ic svg circle { stroke: rgba(255,255,255,0.85); }
     .step.active .step-ic { background: rgba(37,99,235,0.2); border-color: rgba(96,165,250,0.3); }
+    .step.active .step-ic svg path, .step.active .step-ic svg polygon, .step.active .step-ic svg circle { stroke: #93c5fd; }
     .step-txt { font-size: 13px; font-weight: 600; line-height: 1.3; }
     .step-d { font-size: 11px; color: var(--muted); margin-top: 3px; font-weight: 500; }
 
@@ -245,20 +248,30 @@
       left: 10px; right: 10px; z-index: 20; max-width: 500px; margin: 0 auto;
       background: linear-gradient(135deg,#1d4ed8 0%,#2563eb 100%);
       border-radius: 18px;
-      padding: 13px 14px 13px 12px; align-items: center; gap: 12px;
+      padding: 12px 12px 12px 12px; align-items: center; gap: 12px;
       box-shadow: 0 8px 28px rgba(0,0,0,0.45), 0 2px 8px rgba(0,0,0,0.3);
       border: 1px solid rgba(255,255,255,0.12);
+      transition: background .35s ease;
     }
     #maneuver-card.show { display: flex; }
+    #maneuver-card.mc-warn { background: linear-gradient(135deg,#b45309 0%,#d97706 100%); }
+    #maneuver-card.mc-alert { background: linear-gradient(135deg,#991b1b 0%,#dc2626 100%); }
+    @keyframes mc-pulse { 0%,100%{box-shadow:0 8px 28px rgba(0,0,0,0.45),0 2px 8px rgba(0,0,0,0.3)} 50%{box-shadow:0 0 0 6px rgba(220,38,38,0.35),0 8px 28px rgba(0,0,0,0.45)} }
+    #maneuver-card.mc-alert { animation: mc-pulse 1s ease-in-out infinite; }
+    @keyframes loc-pulse { 0%{opacity:0.5;transform:translate(-50%,-50%) scale(0.9)} 100%{opacity:0;transform:translate(-50%,-50%) scale(3.2)} }
     #mc-arrow {
-      font-size: 36px; line-height: 1; flex-shrink: 0;
-      width: 56px; height: 56px; display: flex; align-items: center; justify-content: center;
-      background: rgba(255,255,255,0.15); border-radius: 14px;
-      border: 1px solid rgba(255,255,255,0.2);
+      flex-shrink: 0;
+      width: 62px; height: 62px; display: flex; align-items: center; justify-content: center;
+      background: rgba(255,255,255,0.18); border-radius: 15px;
+      border: 1px solid rgba(255,255,255,0.22);
     }
+    #mc-arrow svg { width: 42px; height: 42px; }
     #mc-info { flex: 1; min-width: 0; }
-    #mc-dist { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.75); text-transform: uppercase; letter-spacing: .06em; }
-    #mc-street { font-size: 17px; font-weight: 800; color: #fff; overflow: hidden; margin-top: 3px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; line-height: 1.25; }
+    #mc-dist { display: flex; align-items: baseline; gap: 5px; line-height: 1; }
+    #mc-dist-num { font-size: 42px; font-weight: 900; color: #fff; letter-spacing: -0.03em; line-height: 1; }
+    #mc-dist-unit { font-size: 16px; font-weight: 700; color: rgba(255,255,255,0.78); }
+    #mc-street { font-size: 16px; font-weight: 800; color: #fff; overflow: hidden; margin-top: 3px; white-space: nowrap; text-overflow: ellipsis; }
+    #mc-next { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.58); margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #mc-follow { flex-shrink: 0; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; color: #fff; cursor: pointer; padding: 9px 11px; font-size: 16px; line-height: 1; transition: background .15s; }
     #mc-follow:hover { background: rgba(255,255,255,0.28); }
     #mc-follow.paused { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.1); opacity: 0.6; }
@@ -825,10 +838,11 @@
 
 <!-- Top maneuver card -->
 <div id="maneuver-card">
-  <div id="mc-arrow">↑</div>
+  <div id="mc-arrow"></div>
   <div id="mc-info">
-    <div id="mc-dist">Starting route</div>
-    <div id="mc-street"></div>
+    <div id="mc-dist"><span id="mc-dist-num">—</span><span id="mc-dist-unit"></span></div>
+    <div id="mc-street">Starting route</div>
+    <div id="mc-next"></div>
   </div>
   <button id="mc-follow" title="Toggle map follow">📍</button>
 </div>
@@ -1069,7 +1083,11 @@
 <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <!-- CTA static bus stop & route shape data (generated from official GTFS) -->
 <script src="cta-bus-data.js"></script>
+<script src="cta-bus-shapes.js"></script>
 <script>
+// ── Suppress noisy MapLibre GL sprite-missing warnings ────────────────────────
+(()=>{const _w=console.warn.bind(console);console.warn=(...a)=>{const m=String(a[0]??'');if(m.includes('could not be loaded')&&m.includes('sprite')||m.includes('styleimagemissing'))return;_w(...a);};})();
+
 // ── WORKER URL ────────────────────────────────────────────────────────────────
 const WORKER_URL = '';
 
@@ -1103,6 +1121,62 @@ let incidents = [];
 const alerted = {}, iMarkers = {};
 let stepCumDist = [], currentStepIdx = 0, navFollowing = true;
 let arrivedFlag = false, navigating = false, lastReroute = 0;
+
+// ── Voice guidance ─────────────────────────────────────────────────────────────
+let voiceEnabled=true,lastVoiceDist=Infinity,lastVoiceStep=-1;
+function speak(text){
+  if(!voiceEnabled||!window.speechSynthesis)return;
+  window.speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text);
+  u.rate=1.05;u.pitch=1;u.volume=1;
+  window.speechSynthesis.speak(u);
+}
+
+// ── Directional location marker ────────────────────────────────────────────────
+let lastHeading=null;
+function makeLocIcon(){
+  return L.divIcon({
+    className:'',
+    html:`<div style="position:relative;width:44px;height:44px">
+      <div style="position:absolute;top:50%;left:50%;width:44px;height:44px;border-radius:50%;background:rgba(6,214,160,0.18);animation:loc-pulse 2.2s ease-out infinite;transform:translate(-50%,-50%)"></div>
+      <div class="loc-arrow" style="position:absolute;top:2px;left:2px;width:40px;height:40px;transform-origin:20px 20px">
+        <svg viewBox="0 0 40 40" width="40" height="40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="20,3 28,22 20,17 12,22" fill="#2563eb" opacity="0.88"/>
+        </svg>
+      </div>
+      <div style="position:absolute;top:50%;left:50%;width:18px;height:18px;border-radius:50%;background:#06d6a0;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.38);transform:translate(-50%,-50%)"></div>
+    </div>`,
+    iconSize:[44,44],
+    iconAnchor:[22,22],
+  });
+}
+function setLocHeading(hdg){
+  if(hdg==null||isNaN(hdg))return;
+  lastHeading=hdg;
+  if(!userMarker)return;
+  const el=userMarker.getElement();
+  if(el){const a=el.querySelector('.loc-arrow');if(a)a.style.transform=`rotate(${hdg}deg)`;}
+}
+
+// ── Compass (DeviceOrientation) — fills heading gap when stationary ────────────
+function onOrientation(e){
+  const hdg=e.webkitCompassHeading??(e.alpha!=null?360-e.alpha:null);
+  if(hdg==null||isNaN(hdg))return;
+  setLocHeading(hdg);
+}
+(function initCompass(){
+  if(!window.DeviceOrientationEvent)return;
+  if(typeof DeviceOrientationEvent.requestPermission==='function'){
+    document.addEventListener('click',function reqOri(){
+      DeviceOrientationEvent.requestPermission().then(s=>{
+        if(s==='granted')window.addEventListener('deviceorientation',onOrientation,true);
+      }).catch(()=>{});
+      document.removeEventListener('click',reqOri);
+    },{once:true});
+  }else{
+    window.addEventListener('deviceorientation',onOrientation,true);
+  }
+})();
 
 // ── STORAGE ───────────────────────────────────────────────────────────────────
 function lsLoad(){ try{ return JSON.parse(localStorage.getItem('wf_inc')||'[]').filter(i=>i.expiresAt>Date.now()); }catch{ return []; } }
@@ -1231,21 +1305,57 @@ function stripNone(s){
   return(s||'').replace(/NONE/g,'').replace(/\s{2,}/g,' ').trim();
 }
 function $(id){return document.getElementById(id);}
-function stepIcon(type,mod){
-  if(type==='arrive')return'🏁';if(type==='depart')return'⬆';
-  if(type==='turn'){
-    if(mod?.includes('sharp right'))return'↪';
-    if(mod?.includes('slight right'))return'↗';
-    if(mod?.includes('right'))return'→';
-    if(mod?.includes('sharp left'))return'↩';
-    if(mod?.includes('slight left'))return'↖';
-    if(mod?.includes('left'))return'←';
-    if(mod?.includes('uturn'))return'🔄';
+// SVG turn-arrow paths — 42×42 viewBox, white stroke, no fill
+function arrowSVG(type,mod){
+  const S='stroke="white" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" fill="none"';
+  const P={
+    straight:    `<path d="M21 37 L21 8" ${S}/><path d="M14 15 L21 8 L28 15" ${S}/>`,
+    slight_r:    `<path d="M16 37 L16 21 L27 9" ${S}/><path d="M20 11 L27 9 L29 18" ${S}/>`,
+    right:       `<path d="M14 37 L14 21 Q14 11 22 11 L30 11" ${S}/><path d="M23 5 L30 11 L23 17" ${S}/>`,
+    sharp_r:     `<path d="M13 37 L13 22 Q13 13 21 13 Q29 13 29 22 L29 33" ${S}/><path d="M22 26 L29 33 L29 25" ${S}/>`,
+    slight_l:    `<path d="M26 37 L26 21 L15 9" ${S}/><path d="M22 11 L15 9 L13 18" ${S}/>`,
+    left:        `<path d="M28 37 L28 21 Q28 11 20 11 L12 11" ${S}/><path d="M19 5 L12 11 L19 17" ${S}/>`,
+    sharp_l:     `<path d="M29 37 L29 22 Q29 13 21 13 Q13 13 13 22 L13 33" ${S}/><path d="M20 26 L13 33 L13 25" ${S}/>`,
+    uturn:       `<path d="M27 37 L27 18 Q27 7 21 7 Q15 7 15 18 L15 30" ${S}/><path d="M9 23 L15 30 L21 23" ${S}/>`,
+    roundabout:  `<circle cx="21" cy="18" r="9" ${S}/><path d="M28 12 L30 18 L24 16" ${S}/><path d="M21 27 L21 37" ${S}/><path d="M15 33 L21 37 L27 33" ${S}/>`,
+    arrive:      `<circle cx="21" cy="17" r="9" ${S}/><circle cx="21" cy="17" r="3.5" fill="white" stroke="none"/><path d="M21 26 L21 37" ${S}/><path d="M15 33 L21 37 L27 33" ${S}/>`,
+    depart:      `<path d="M21 37 L21 8" ${S}/><path d="M14 15 L21 8 L28 15" ${S}/>`,
+  };
+  let k='straight';
+  if(type==='arrive')k='arrive';
+  else if(type==='depart')k='depart';
+  else if(type==='roundabout'||type==='rotary')k='roundabout';
+  else if(mod?.includes('uturn'))k='uturn';
+  else if(mod?.includes('sharp right'))k='sharp_r';
+  else if(mod?.includes('slight right'))k='slight_r';
+  else if(mod?.includes('right'))k='right';
+  else if(mod?.includes('sharp left'))k='sharp_l';
+  else if(mod?.includes('slight left'))k='slight_l';
+  else if(mod?.includes('left'))k='left';
+  else if(type==='merge'||type==='fork'||type==='off ramp'||type==='on ramp'){
+    k=mod?.includes('left')?'slight_l':'slight_r';
   }
-  if(type==='roundabout'||type==='rotary')return'🔄';
-  if(type==='merge')return'↗';if(type==='fork'||type==='off ramp')return'↗';
-  return'⬆';
+  return`<svg viewBox="0 0 42 42" width="42" height="42" xmlns="http://www.w3.org/2000/svg">${P[k]}</svg>`;
 }
+// Human-readable direction label for voice guidance
+function stepLabel(type,mod){
+  if(type==='arrive')return'arrive at destination';
+  if(type==='depart')return'head out';
+  if(type==='roundabout'||type==='rotary')return'take the roundabout';
+  if(mod?.includes('uturn'))return'make a U-turn';
+  if(type==='merge')return mod?.includes('left')?'merge left':'merge right';
+  if(type==='fork')return mod?.includes('left')?'keep left':'keep right';
+  if(type==='off ramp'||type==='on ramp')return'take the ramp';
+  if(mod?.includes('sharp right'))return'turn sharp right';
+  if(mod?.includes('slight right'))return'keep right';
+  if(mod?.includes('right'))return'turn right';
+  if(mod?.includes('sharp left'))return'turn sharp left';
+  if(mod?.includes('slight left'))return'keep left';
+  if(mod?.includes('left'))return'turn left';
+  return'continue straight';
+}
+// Thin wrapper kept for renderSteps() which calls stepIcon()
+function stepIcon(type,mod){return arrowSVG(type,mod);}
 function isDesktop(){ return window.innerWidth >= 680; }
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
@@ -1331,13 +1441,47 @@ function highlightCurrentStep(idx){
 }
 function updateManeuverCard(sIdx,distRem){
   const steps=routeData.steps,s=steps[sIdx];
-  if(!s||s.maneuver.type==='arrive'){$('maneuver-card').classList.remove('show');return;}
+  const card=$('maneuver-card');
+  if(!s||s.maneuver.type==='arrive'){card.classList.remove('show');return;}
   const distTraveled=routeData.dist*1000-distRem;
   const distToTurn=Math.max(0,(stepCumDist[sIdx]||0)+s.distance-distTraveled);
-  $('mc-arrow').textContent=stepIcon(s.maneuver.type,s.maneuver.modifier);
+  // Arrow SVG
+  $('mc-arrow').innerHTML=arrowSVG(s.maneuver.type,s.maneuver.modifier);
+  // Distance — show feet <0.2mi, miles otherwise
+  const ft=distToTurn*3.28084;
+  const mi=distToTurn/1609.34;
+  let dNum,dUnit;
+  if(ft<1000){dNum=Math.max(50,Math.round(ft/50)*50);dUnit='ft';}
+  else{dNum=mi>=10?Math.round(mi):(Math.round(mi*10)/10);dUnit='mi';}
+  $('mc-dist-num').textContent=dNum;
+  $('mc-dist-unit').textContent=dUnit;
+  // Street name
   $('mc-street').textContent=steps[sIdx+1]?.name||s.name||'Continue';
-  $('mc-dist').textContent=`in ${fmtStep(distToTurn)}`;
-  $('maneuver-card').classList.add('show');
+  // Next-next step preview
+  const nxt2=steps[sIdx+2];
+  if(nxt2&&nxt2.maneuver.type!=='arrive'){
+    $('mc-next').textContent=`Then: ${stepLabel(nxt2.maneuver.type,nxt2.maneuver.modifier)}${nxt2.name?' on '+nxt2.name:''}`;
+  }else{
+    $('mc-next').textContent='';
+  }
+  // Approaching-turn urgency coloring
+  card.classList.remove('mc-warn','mc-alert');
+  if(ft<150)card.classList.add('mc-alert');
+  else if(ft<400)card.classList.add('mc-warn');
+  // Voice guidance — announce at ~1500ft, ~500ft, and on the turn (<100ft)
+  if(sIdx!==lastVoiceStep){lastVoiceStep=sIdx;lastVoiceDist=Infinity;}
+  const dir=stepLabel(s.maneuver.type,s.maneuver.modifier);
+  const street=s.name?` on ${s.name}`:'';
+  if(ft<100&&lastVoiceDist>100){
+    lastVoiceDist=ft;speak(`${dir}${street}`);
+  }else if(ft<500&&lastVoiceDist>500){
+    lastVoiceDist=ft;speak(`In 500 feet, ${dir}${street}`);
+  }else if(ft<1500&&lastVoiceDist>1500){
+    lastVoiceDist=ft;
+    const dist=mi<0.3?`${Math.round(ft/100)*100} feet`:`${Math.round(mi*10)/10} miles`;
+    speak(`In ${dist}, ${dir}${street}`);
+  }
+  card.classList.add('show');
 }
 function updateNavLive(la,lo,speedMs){
   if(!routeData||!dest||arrivedFlag||!navigating)return;
@@ -1385,12 +1529,13 @@ function doArrived(){
 // ── GEO ───────────────────────────────────────────────────────────────────────
 if(navigator.geolocation){
   navigator.geolocation.watchPosition(p=>{
-    const{latitude:la,longitude:lo,speed:spd}=p.coords;
+    const{latitude:la,longitude:lo,speed:spd,heading:gpsHdg}=p.coords;
     userLoc=[lo,la];
+    if(gpsHdg!=null&&!isNaN(gpsHdg)&&spd>0.5)setLocHeading(gpsHdg);
     // First GPS fix
     const ll=[la,lo];
     if(!userMarker){
-      userMarker=L.circleMarker(ll,{radius:9,fillColor:'#06d6a0',color:'#fff',weight:3,fillOpacity:1}).addTo(map);
+      userMarker=L.marker(ll,{icon:makeLocIcon(),zIndexOffset:1000,interactive:false}).addTo(map);
       if(!dest)map.setView(ll,15);
     }else{
       userMarker.setLatLng(ll);
@@ -2722,6 +2867,7 @@ function renderSteps(){
 
 function startNavigation(){
   navigating=true;navFollowing=true;currentStepIdx=0;
+  lastVoiceStep=-1;lastVoiceDist=Infinity;
   $('route-preview').classList.remove('show');
   $('search-sheet').classList.remove('peek');
   $('search-sheet').classList.add('gone');
@@ -2739,11 +2885,19 @@ function startNavigation(){
   $('mc-follow').classList.remove('paused');$('mc-follow').textContent='📍';
   if(userLoc){const[lo,la]=userLoc;map.flyTo([la,lo],16);}
   updateFabsPos();
+  // Kick off voice with first instruction
+  const s0=routeData.steps[0];
+  if(s0){
+    const dir=stepLabel(s0.maneuver.type,s0.maneuver.modifier);
+    const dist=fmtStep(s0.distance);
+    speak(`Starting navigation. In ${dist}, ${dir}${s0.name?' on '+s0.name:''}`);
+  }
 }
 
 function clearNav(){
   dest=null;routeData=null;routeCoords=[];
   navigating=false;arrivedFlag=false;currentStepIdx=0;navFollowing=true;stepCumDist=[];
+  lastVoiceStep=-1;lastVoiceDist=Infinity;window.speechSynthesis?.cancel();
   // Clear both search inputs
   $('search-input').value='';$('s-clear').style.display='none';
   $('search-results').classList.remove('show');
@@ -4048,7 +4202,7 @@ async function fetchBusRouteGeometry(routeRef,fromLat,fromLon,toLat,toLon){
     // If the bus route was found but simply doesn't serve the destination, re-throw —
     // falling back to a walk path and labelling it as a bus route is wrong.
     if(/does not reach/.test(e.message)) throw e;
-    console.warn('[fetchBusRouteGeometry] Overpass failed:',e.message,'— falling back to OSRM walk path');
+    console.debug('[fetchBusRouteGeometry] Overpass failed:',e.message,'— falling back to OSRM walk path');
     // Use OSRM street routing as a bus-path approximation so the polyline follows
     // real streets rather than being a meaningless straight line.
     try{
@@ -4903,9 +5057,10 @@ function showTransitLegNav(){
     strip.style.display='none';
     advBar.style.display='none';
     mc.classList.add('show');
-    $('mc-arrow').textContent='🚶';
-    $('mc-dist').textContent=`Walk ${fmtDist(leg.dist||0)}`;
-    $('mc-street').textContent=`Head to ${leg.to}`;
+    $('mc-arrow').innerHTML=arrowSVG('depart','');
+    $('mc-dist-num').textContent='🚶';$('mc-dist-unit').textContent='';
+    $('mc-street').textContent=`Walk ${fmtDist(leg.dist||0)} → ${leg.to}`;
+    $('mc-next').textContent='';
     // Focus map on walk leg start
     if(leg.coords?.length){const[la,lo]=leg.coords[0];if(navFollowing)map.flyTo([la,lo],16);}
   }else{
@@ -4916,9 +5071,10 @@ function showTransitLegNav(){
     advBar.style.display='block';
     advBtn.textContent=`${icon} Tap when boarded → advance to next step`;
     mc.classList.add('show');
-    $('mc-arrow').textContent=icon;
-    $('mc-dist').textContent=`Wait ~${leg.waitMin} min · ride ~${Math.round(leg.dur)} min`;
+    $('mc-arrow').innerHTML=arrowSVG('depart','');
+    $('mc-dist-num').textContent=icon;$('mc-dist-unit').textContent='';
     $('mc-street').textContent=`${leg.line} → ${leg.exitAt||leg.to}`;
+    $('mc-next').textContent=`Wait ~${leg.waitMin} min · ride ~${Math.round(leg.dur)} min`;
     // Fly to boarding station
     if(leg.coords?.length){const[la,lo]=leg.coords[0];map.flyTo([la,lo],15);}
   }
