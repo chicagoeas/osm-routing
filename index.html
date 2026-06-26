@@ -1608,8 +1608,7 @@ function drawClosureLine(coords,meta,popupHtml){
 }
 
 // Synthesise a short (~130 m) road-oriented line for a single-point incident.
-// Borrows bearing from the nearest GTIS congestion segment that has both endpoints;
-// falls back to a short E-W segment if nothing useful is nearby.
+// Used as instant fallback before the async Stadia locate result arrives.
 function synthIncidentLine(lat,lon){
   const HALF=0.0006; // ~66 m in degrees → 132 m total segment
   let bestSeg=null,bestDist=Infinity;
@@ -1627,6 +1626,73 @@ function synthIncidentLine(lat,lon){
     }
   }
   return[[lat,lon-HALF],[lat,lon+HALF]]; // E-W fallback
+}
+
+// ── Stadia Map-Match road snapping ────────────────────────────────────────────
+// Calls Stadia's Valhalla locate endpoint to find the exact road edge nearest to
+// a single-point incident, giving us true road geometry instead of a guess.
+// Results are cached in memory so each unique coordinate is only looked up once.
+const _incidentRoadCache = new Map();
+
+async function snapIncidentToRoad(lat, lon){
+  const key=`${lat.toFixed(5)},${lon.toFixed(5)}`;
+  if(_incidentRoadCache.has(key)) return _incidentRoadCache.get(key);
+
+  try{
+    const ac=new AbortController();
+    const t=setTimeout(()=>ac.abort(),8000);
+    let resp;
+    try{
+      resp=await fetch(
+        `https://api.stadiamaps.com/locate/v1?api_key=${STADIA_KEY}`,
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({locations:[{lat,lon}],costing:'auto',verbose:true}),
+         signal:ac.signal}
+      );
+    }finally{clearTimeout(t);}
+
+    if(!resp.ok) throw new Error('Locate '+resp.status);
+    const data=await resp.json();
+    const edge=data.locations?.[0]?.edges?.[0];
+    if(!edge) throw new Error('No edges returned');
+
+    // Prefer encoded road shape (polyline6) — gives full segment geometry
+    const shape=edge.edge_info?.shape;
+    if(shape){
+      const coords=decodePolyline6(shape);
+      if(coords.length>=2){_incidentRoadCache.set(key,coords);return coords;}
+    }
+    // Fallback: begin/end node coordinates of the nearest edge
+    const bn=edge.begin_node??edge.begin_vertex;
+    const en=edge.end_node??edge.end_vertex;
+    if(bn?.lat!=null&&en?.lat!=null){
+      const coords=[[bn.lat,bn.lon],[en.lat,en.lon]];
+      _incidentRoadCache.set(key,coords);return coords;
+    }
+    throw new Error('No usable geometry in locate response');
+  }catch(e){
+    console.debug('[IncidentSnap] locate failed, using synth:',e.message);
+  }
+  const fallback=synthIncidentLine(lat,lon);
+  _incidentRoadCache.set(key,fallback);
+  return fallback;
+}
+
+// Enrich all single-point incidents in the background after initial load.
+// Caps at 30 API calls per batch to protect free-tier credits; staggered 80 ms
+// apart so we don't burst-rate-limit. Re-renders markers when done.
+async function enrichIncidentGeometry(incidents){
+  const singles=incidents.filter(r=>{
+    const span=r.allCoords?.length>=2?haversine(r.allCoords[0],r.allCoords[r.allCoords.length-1]):0;
+    return span<5&&!r._roadCoords;
+  });
+  let count=0;
+  for(const row of singles){
+    if(count>=30) break;
+    row._roadCoords=await snapIncidentToRoad(row.lat,row.lon);
+    count++;
+    await new Promise(res=>setTimeout(res,80)); // 80 ms between calls
+  }
 }
 
 // Render a single incident as a cluster point marker (fallback when no road geometry).
@@ -1681,9 +1747,9 @@ function renderGTISMarkers(){
       // Multi-point: draw the feed-provided road geometry as a coloured line
       drawClosureLine(allCoords,meta,popupHtml);
     }else{
-      // Single-point (or near-coincident coords): synthesise a short road-oriented
-      // line so every incident shows the affected road segment, not just a pin.
-      const lineCoords=allCoords.length>=2?allCoords:synthIncidentLine(lat,lon);
+      // Single-point: use Stadia-snapped geometry if enrichment finished,
+      // otherwise fall back to synthIncidentLine (instant, bearing-based guess).
+      const lineCoords=row._roadCoords||(allCoords.length>=2?allCoords:synthIncidentLine(lat,lon));
       drawClosureLine(lineCoords,meta,popupHtml);
     }
   });
@@ -1876,6 +1942,11 @@ async function loadGTISIncidents(){
     }
 
     gtisIncidents=parsed;
+    // Enrich single-point incidents with real Stadia road geometry in the background.
+    // renderGTISMarkers() is called again when enrichment finishes so lines update.
+    enrichIncidentGeometry(gtisIncidents).then(()=>{
+      if(gtisLayerOn) renderGTISMarkers();
+    }).catch(()=>{});
     if(typeof window._splashDataReady==='function')window._splashDataReady();
 
     // Update incident count badge
