@@ -1575,70 +1575,10 @@ function synthIncidentLine(lat,lon){
   return[[lat,lon-HALF],[lat,lon+HALF]]; // E-W fallback
 }
 
-// ── Stadia Map-Match road snapping ────────────────────────────────────────────
-// Calls Stadia's Valhalla locate endpoint to find the exact road edge nearest to
-// a single-point incident, giving us true road geometry instead of a guess.
-// Results are cached in memory so each unique coordinate is only looked up once.
-const _incidentRoadCache = new Map();
-
-async function snapIncidentToRoad(lat, lon){
-  const key=`${lat.toFixed(5)},${lon.toFixed(5)}`;
-  if(_incidentRoadCache.has(key)) return _incidentRoadCache.get(key);
-
-  // Try two Stadia/Valhalla endpoints. nearest_roads is designed for point→road
-  // snapping; locate is the classic alternative. Each may return shape at the
-  // edge root or nested under edge_info — we check both locations.
-  const ENDPOINTS=['nearest_roads','locate'];
-  for(const ep of ENDPOINTS){
-    try{
-      const ac=new AbortController();
-      const t=setTimeout(()=>ac.abort(),8000);
-      let resp;
-      try{
-        resp=await fetch(
-          `https://api.stadiamaps.com/${ep}/v1?api_key=${STADIA_KEY}`,
-          {method:'POST',headers:{'Content-Type':'application/json'},
-           body:JSON.stringify({locations:[{lat,lon}],costing:'auto',verbose:true}),
-           signal:ac.signal}
-        );
-      }finally{clearTimeout(t);}
-
-      if(!resp.ok) throw new Error(`${ep} HTTP ${resp.status}`);
-      const data=await resp.json();
-
-      // nearest_roads → {edges:[...]}, locate → {locations:[{edges:[...]}]}
-      const edges=Array.isArray(data.edges)?data.edges
-                 :(data.locations?.[0]?.edges||[]);
-      const edge=edges[0];
-      if(!edge) throw new Error(`${ep}: no edges`);
-
-      // Road shape may sit at edge root OR inside edge_info (Valhalla version-dependent)
-      const shape=edge.shape??edge.edge_info?.shape;
-      if(shape){
-        const coords=decodePolyline6(shape);
-        if(coords.length>=2){
-          console.debug(`[IncidentSnap] ${ep} shape → ${coords.length} pts`);
-          _incidentRoadCache.set(key,coords);return coords;
-        }
-      }
-      // Last resort: begin/end node gives at least the correct road direction
-      const bn=edge.begin_node??edge.begin_vertex;
-      const en=edge.end_node??edge.end_vertex;
-      const bnLat=bn?.lat??bn?.node_lat, bnLon=bn?.lon??bn?.node_lon;
-      const enLat=en?.lat??en?.node_lat, enLon=en?.lon??en?.node_lon;
-      if(bnLat!=null&&enLat!=null){
-        const coords=[[bnLat,bnLon],[enLat,enLon]];
-        console.debug(`[IncidentSnap] ${ep} begin/end nodes`);
-        _incidentRoadCache.set(key,coords);return coords;
-      }
-      throw new Error(`${ep}: no usable geometry`);
-    }catch(e){
-      console.debug('[IncidentSnap]',e.message);
-    }
-  }
-  const fallback=synthIncidentLine(lat,lon);
-  _incidentRoadCache.set(key,fallback);
-  return fallback;
+// ── Incident road geometry ─────────────────────────────────────────────────────
+// Uses the local synthetic fallback for incident line geometry.
+function snapIncidentToRoad(lat, lon){
+  return Promise.resolve(synthIncidentLine(lat,lon));
 }
 
 // Enrich all single-point incidents in the background after initial load.
@@ -2268,7 +2208,7 @@ function disableGTISLayer(){
   buildTrafficWarn();
 }
 
-// ── ROUTING ───────────────────────────
+// ── ROUTING ───────────────────────────────────────────────────────────────────
 // Valhalla endpoints tried in order. Both are public FOSSGIS instances with CORS.
 const VALHALLA_ENDPOINTS = [
   'https://valhalla1.openstreetmap.de/route',
