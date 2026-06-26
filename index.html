@@ -1588,8 +1588,10 @@ function buildGTISPopup(row,meta){
   </div>`;
 }
 
-// Draw a closure polyline with a white border glow underneath for visibility
-function drawClosureLine(coords,meta,popupHtml){
+// Draw a closure polyline with a white border glow underneath for visibility.
+// Pass `row` (optional) to store live polyline refs so enrichment can update
+// geometry in-place via setLatLngs() without a full clear+redraw.
+function drawClosureLine(coords,meta,popupHtml,row){
   const border=L.polyline(coords,{color:'#fff',weight:14,opacity:0.35,lineCap:'round',lineJoin:'round'}).addTo(map);
   const line=L.polyline(coords,{color:meta.color,weight:8,opacity:0.92,lineCap:'round',lineJoin:'round'}).addTo(map);
   border.bindPopup(popupHtml,{maxWidth:260});
@@ -1605,6 +1607,8 @@ function drawClosureLine(coords,meta,popupHtml){
   const mk=L.marker([mla,mlo],{icon}).addTo(map);
   mk.bindPopup(popupHtml,{maxWidth:260});
   gtisMarkers.push(mk);
+  // Store live refs for in-place geometry updates after road snapping
+  if(row){row._borderPoly=border;row._linePoly=line;row._midMk=mk;}
 }
 
 // Synthesise a short (~130 m) road-oriented line for a single-point incident.
@@ -1638,40 +1642,56 @@ async function snapIncidentToRoad(lat, lon){
   const key=`${lat.toFixed(5)},${lon.toFixed(5)}`;
   if(_incidentRoadCache.has(key)) return _incidentRoadCache.get(key);
 
-  try{
-    const ac=new AbortController();
-    const t=setTimeout(()=>ac.abort(),8000);
-    let resp;
+  // Try two Stadia/Valhalla endpoints. nearest_roads is designed for point→road
+  // snapping; locate is the classic alternative. Each may return shape at the
+  // edge root or nested under edge_info — we check both locations.
+  const ENDPOINTS=['nearest_roads','locate'];
+  for(const ep of ENDPOINTS){
     try{
-      resp=await fetch(
-        `https://api.stadiamaps.com/locate/v1?api_key=${STADIA_KEY}`,
-        {method:'POST',headers:{'Content-Type':'application/json'},
-         body:JSON.stringify({locations:[{lat,lon}],costing:'auto',verbose:true}),
-         signal:ac.signal}
-      );
-    }finally{clearTimeout(t);}
+      const ac=new AbortController();
+      const t=setTimeout(()=>ac.abort(),8000);
+      let resp;
+      try{
+        resp=await fetch(
+          `https://api.stadiamaps.com/${ep}/v1?api_key=${STADIA_KEY}`,
+          {method:'POST',headers:{'Content-Type':'application/json'},
+           body:JSON.stringify({locations:[{lat,lon}],costing:'auto',verbose:true}),
+           signal:ac.signal}
+        );
+      }finally{clearTimeout(t);}
 
-    if(!resp.ok) throw new Error('Locate '+resp.status);
-    const data=await resp.json();
-    const edge=data.locations?.[0]?.edges?.[0];
-    if(!edge) throw new Error('No edges returned');
+      if(!resp.ok) throw new Error(`${ep} HTTP ${resp.status}`);
+      const data=await resp.json();
 
-    // Prefer encoded road shape (polyline6) — gives full segment geometry
-    const shape=edge.edge_info?.shape;
-    if(shape){
-      const coords=decodePolyline6(shape);
-      if(coords.length>=2){_incidentRoadCache.set(key,coords);return coords;}
+      // nearest_roads → {edges:[...]}, locate → {locations:[{edges:[...]}]}
+      const edges=Array.isArray(data.edges)?data.edges
+                 :(data.locations?.[0]?.edges||[]);
+      const edge=edges[0];
+      if(!edge) throw new Error(`${ep}: no edges`);
+
+      // Road shape may sit at edge root OR inside edge_info (Valhalla version-dependent)
+      const shape=edge.shape??edge.edge_info?.shape;
+      if(shape){
+        const coords=decodePolyline6(shape);
+        if(coords.length>=2){
+          console.debug(`[IncidentSnap] ${ep} shape → ${coords.length} pts`);
+          _incidentRoadCache.set(key,coords);return coords;
+        }
+      }
+      // Last resort: begin/end node gives at least the correct road direction
+      const bn=edge.begin_node??edge.begin_vertex;
+      const en=edge.end_node??edge.end_vertex;
+      const bnLat=bn?.lat??bn?.node_lat, bnLon=bn?.lon??bn?.node_lon;
+      const enLat=en?.lat??en?.node_lat, enLon=en?.lon??en?.node_lon;
+      if(bnLat!=null&&enLat!=null){
+        const coords=[[bnLat,bnLon],[enLat,enLon]];
+        console.debug(`[IncidentSnap] ${ep} begin/end nodes`);
+        _incidentRoadCache.set(key,coords);return coords;
+      }
+      throw new Error(`${ep}: no usable geometry`);
+    }catch(e){
+      console.debug('[IncidentSnap]',e.message);
     }
-    // Fallback: begin/end node coordinates of the nearest edge
-    const bn=edge.begin_node??edge.begin_vertex;
-    const en=edge.end_node??edge.end_vertex;
-    if(bn?.lat!=null&&en?.lat!=null){
-      const coords=[[bn.lat,bn.lon],[en.lat,en.lon]];
-      _incidentRoadCache.set(key,coords);return coords;
-    }
-    throw new Error('No usable geometry in locate response');
-  }catch(e){
-    console.debug('[IncidentSnap] locate failed, using synth:',e.message);
   }
   const fallback=synthIncidentLine(lat,lon);
   _incidentRoadCache.set(key,fallback);
@@ -1679,8 +1699,9 @@ async function snapIncidentToRoad(lat, lon){
 }
 
 // Enrich all single-point incidents in the background after initial load.
-// Caps at 30 API calls per batch to protect free-tier credits; staggered 80 ms
-// apart so we don't burst-rate-limit. Re-renders markers when done.
+// Caps at 30 API calls per batch; staggered 80 ms apart to stay within rate limits.
+// After each snap, updates geometry IN-PLACE via setLatLngs() on the live Leaflet
+// polylines — no full clear+redraw, so there is zero flicker or lag.
 async function enrichIncidentGeometry(incidents){
   const singles=incidents.filter(r=>{
     const span=r.allCoords?.length>=2?haversine(r.allCoords[0],r.allCoords[r.allCoords.length-1]):0;
@@ -1689,9 +1710,22 @@ async function enrichIncidentGeometry(incidents){
   let count=0;
   for(const row of singles){
     if(count>=30) break;
-    row._roadCoords=await snapIncidentToRoad(row.lat,row.lon);
+    const snapped=await snapIncidentToRoad(row.lat,row.lon);
+    row._roadCoords=snapped;
     count++;
-    await new Promise(res=>setTimeout(res,80)); // 80 ms between calls
+    // If the polylines are currently live on the map, update them in-place
+    if(row._linePoly&&row._borderPoly){
+      try{
+        row._linePoly.setLatLngs(snapped);
+        row._borderPoly.setLatLngs(snapped);
+        // Reposition the midpoint tap-target marker
+        if(row._midMk){
+          const midIdx=Math.floor((snapped.length-1)/2);
+          row._midMk.setLatLng(snapped[midIdx]);
+        }
+      }catch(_){}
+    }
+    await new Promise(res=>setTimeout(res,80));
   }
 }
 
@@ -1749,8 +1783,9 @@ function renderGTISMarkers(){
     }else{
       // Single-point: use Stadia-snapped geometry if enrichment finished,
       // otherwise fall back to synthIncidentLine (instant, bearing-based guess).
+      // Pass `row` so drawClosureLine can store polyline refs for in-place update.
       const lineCoords=row._roadCoords||(allCoords.length>=2?allCoords:synthIncidentLine(lat,lon));
-      drawClosureLine(lineCoords,meta,popupHtml);
+      drawClosureLine(lineCoords,meta,popupHtml,row);
     }
   });
 
@@ -1942,11 +1977,9 @@ async function loadGTISIncidents(){
     }
 
     gtisIncidents=parsed;
-    // Enrich single-point incidents with real Stadia road geometry in the background.
-    // renderGTISMarkers() is called again when enrichment finishes so lines update.
-    enrichIncidentGeometry(gtisIncidents).then(()=>{
-      if(gtisLayerOn) renderGTISMarkers();
-    }).catch(()=>{});
+    // Enrich single-point incidents in background. Updates polylines in-place via
+    // setLatLngs() — no re-render needed, so no flicker or lag on completion.
+    enrichIncidentGeometry(gtisIncidents).catch(()=>{});
     if(typeof window._splashDataReady==='function')window._splashDataReady();
 
     // Update incident count badge
