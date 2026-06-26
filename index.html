@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -706,13 +707,13 @@
       <div class="mvp-thumb" style="background:linear-gradient(135deg,#4a6fa5,#7fa8d4)">🗺️</div>
       <span>Stadia</span>
     </button>
-    <button class="mvp-tile" data-s="default">
-      <div class="mvp-thumb" style="background:linear-gradient(135deg,#166534,#0d2137)">🗺️</div>
-      <span>Default</span>
+    <button class="mvp-tile" data-s="stadia_dark">
+      <div class="mvp-thumb" style="background:linear-gradient(135deg,#1e293b,#0f172a)">🌑</div>
+      <span>Dark</span>
     </button>
     <button class="mvp-tile" data-s="satellite">
       <div class="mvp-thumb" style="background:linear-gradient(135deg,#18181b,#0f172a)">🛰️</div>
-      <span>Satellite</span>
+      <span>Sat</span>
     </button>
     <button class="mvp-tile" data-s="terrain">
       <div class="mvp-thumb" style="background:linear-gradient(135deg,#2d5a1b,#1a3a0e)">⛰️</div>
@@ -1060,6 +1061,8 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <!-- CTA static bus stop & route shape data (generated from official GTFS) -->
 <script src="cta-bus-data.js"></script>
 <script>
@@ -1069,14 +1072,13 @@ const WORKER_URL = '';
 // ── TILES ─────────────────────────────────────────────────────────────────────
 const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors';
 const STADIA_ATTR = '© <a href="https://www.stadiamaps.com/" target="_blank">Stadia Maps</a> © <a href="https://openmaptiles.org/" target="_blank">OpenMapTiles</a> © '+OSM_ATTR;
+const STADIA_KEY = 'e7b59d98-4525-4540-ac1d-caa17c9f10d6';
 const TILES = {
-  stadia:    { url:'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png', attr:STADIA_ATTR, opts:{maxZoom:20}, label:'Stadia', icon:'🗺️', bg:'#4a6fa5' },
-  default:   { url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attr:OSM_ATTR, opts:{maxZoom:19}, label:'Default', icon:'🌐', bg:'#166534' },
-  dark:      { url:'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', attr:OSM_ATTR+', © <a href="https://carto.com/" target="_blank">CARTO</a>', opts:{maxZoom:19,subdomains:'abcd'}, label:'Dark', icon:'🌑', bg:'#1e293b' },
-  light:     { url:'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', attr:OSM_ATTR+', © <a href="https://carto.com/" target="_blank">CARTO</a>', opts:{maxZoom:19,subdomains:'abcd'}, label:'Light', icon:'☀️', bg:'#b45309' },
-  satellite: { url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr:'© <a href="https://www.esri.com/" target="_blank">Esri</a>, Earthstar Geographics', opts:{maxZoom:19}, label:'Sat', icon:'🛰️', bg:'#18181b' },
-  terrain:   { url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attr:OSM_ATTR+', © <a href="https://opentopomap.org" target="_blank">OpenTopoMap</a>', opts:{maxZoom:17,subdomains:'abc'}, label:'Terrain', icon:'⛰️', bg:'#2d5a1b' },
-  transit:   { url:'https://tile.memomaps.de/tilegen/{z}/{x}/{y}.png', attr:OSM_ATTR+', © <a href="https://memomaps.de/" target="_blank">memomaps</a>', opts:{maxZoom:17}, label:'Transit', icon:'🚌', bg:'#1d4ed8' },
+  stadia:      { type:'vector', styleUrl:`https://tiles.stadiamaps.com/styles/alidade_smooth.json?api_key=${STADIA_KEY}`, attr:STADIA_ATTR, label:'Stadia', icon:'🗺️', bg:'#4a6fa5' },
+  stadia_dark: { type:'vector', styleUrl:`https://tiles.stadiamaps.com/styles/alidade_smooth_dark.json?api_key=${STADIA_KEY}`, attr:STADIA_ATTR, label:'Dark', icon:'🌑', bg:'#1e293b' },
+  satellite:   { url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr:'© <a href="https://www.esri.com/" target="_blank">Esri</a>, Earthstar Geographics', opts:{maxZoom:19}, label:'Sat', icon:'🛰️', bg:'#18181b' },
+  terrain:     { url:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attr:OSM_ATTR+', © <a href="https://opentopomap.org" target="_blank">OpenTopoMap</a>', opts:{maxZoom:17,subdomains:'abc'}, label:'Terrain', icon:'⛰️', bg:'#2d5a1b' },
+  transit:     { url:'https://tile.memomaps.de/tilegen/{z}/{x}/{y}.png', attr:OSM_ATTR+', © <a href="https://memomaps.de/" target="_blank">memomaps</a>', opts:{maxZoom:17}, label:'Transit', icon:'🚌', bg:'#1d4ed8' },
 };
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
@@ -1267,8 +1269,12 @@ function _applyTileOnly(style){
   mapStyle=style;
   if(tileLayer){map.removeLayer(tileLayer);tileLayer=null;}
   const t=TILES[style];
-  tileLayer=L.tileLayer(t.url,{attribution:t.attr,...t.opts}).addTo(map);
-  tileLayer.bringToBack();
+  if(t.type==='vector'){
+    tileLayer=L.maplibreGL({style:t.styleUrl,attribution:t.attr}).addTo(map);
+  } else {
+    tileLayer=L.tileLayer(t.url,{attribution:t.attr,...t.opts}).addTo(map);
+    tileLayer.bringToBack();
+  }
   renderMapGridMobile();
   renderMapGridDesktop();
   updateMapViewPopupSelection();
@@ -1333,7 +1339,7 @@ function applyAutoNight(){
   if(!ss||!ss.sunrise||!ss.sunset)return;
   const now=new Date();
   const isNight=now>=ss.sunset||now<ss.sunrise;
-  const target=isNight?'dark':'stadia';
+  const target=isNight?'stadia_dark':'stadia';
   if(mapStyle!==target){
     _applyTileOnly(target);
     console.log(`[AutoNight] switched to ${target} (sunrise ${ss.sunrise.toLocaleTimeString()}, sunset ${ss.sunset.toLocaleTimeString()})`);
