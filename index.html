@@ -4259,11 +4259,11 @@ async function findBusTransferTrainOption(la1,lo1,la2,lo2,allDestStns,_originBus
       if(wait>25) continue;
       try{
         const coords=await fetchBusRouteGeometry(rt,busFromLat,busFromLon,busToLat,busToLon);
-        if(coords.length>=3){busCoords=coords;busRouteLabel='Route '+rt+' Bus';busApprox=false;busWaitMin=wait;break;}
+        if(coords.length>=3){busCoords=coords;busCoords[0]=[busFromLat,busFromLon];busCoords[busCoords.length-1]=[busToLat,busToLon];busRouteLabel='Route '+rt+' Bus';busApprox=false;busWaitMin=wait;break;}
       }catch(e){}
     }
     if(busCoords.length<3){
-      try{const wr=await getWalkLeg(busFromLon,busFromLat,busToLon,busToLat);if(wr.coords.length>=2)busCoords=wr.coords;}catch{}
+      try{const wr=await getWalkLeg(busFromLon,busFromLat,busToLon,busToLat);if(wr.coords.length>=2){busCoords=wr.coords;busCoords[0]=[busFromLat,busFromLon];busCoords[busCoords.length-1]=[busToLat,busToLon];}}catch{}
     }
 
     const busRideMin=Math.max(4,Math.round((boardStn.dOrig/1000)/18*60));
@@ -4388,12 +4388,12 @@ async function findBusTrainOption(la1,lo1,la2,lo2,allDestStns){
       if(wait>25) continue;
       try{
         const coords=await fetchBusRouteGeometry(rt,busFromLat,busFromLon,busToLat,busToLon);
-        if(coords.length>=3){busCoords=coords;busRouteLabel='Route '+rt+' Bus';busApprox=false;busWaitMin=wait;break;}
+        if(coords.length>=3){busCoords=coords;busCoords[0]=[busFromLat,busFromLon];busCoords[busCoords.length-1]=[busToLat,busToLon];busRouteLabel='Route '+rt+' Bus';busApprox=false;busWaitMin=wait;break;}
       }catch(e){}
     }
     // Fallback: OSRM street path (better than straight line)
     if(busCoords.length<3){
-      try{const wr=await getWalkLeg(busFromLon,busFromLat,busToLon,busToLat);if(wr.coords.length>=2)busCoords=wr.coords;}catch{}
+      try{const wr=await getWalkLeg(busFromLon,busFromLat,busToLon,busToLat);if(wr.coords.length>=2){busCoords=wr.coords;busCoords[0]=[busFromLat,busFromLon];busCoords[busCoords.length-1]=[busToLat,busToLon];}}catch{}
     }
 
     const busTotalDur=(walkToBus.dur||0)+busWaitMin+busRideMin+(walkFromBusToStn.dur||0);
