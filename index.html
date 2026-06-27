@@ -1617,23 +1617,45 @@ function selectDest(d){
 // GTIS — Travel Midwest live traffic layer
 // ═══════════════════════e  ══════════════════════════════════════════════════════
 
-// Classify a GTIS incident row → {emoji, color, label, isClosure}
-// isClosure=true means Valhalla will be asked to avoid this location.
+// Classify an incident row → {emoji, color, label, isClosure}
+// Handles TomTom iconCategory (primary) with text-match fallback for legacy rows.
 const ALL_LANES_RE=/all\s+lane|road\s+clos|fully\s+clos|total\s+clos|clos.*all|lane.*clos.*all/i;
 function gtisClassify(row){
+  // ── TomTom iconCategory fast-path ──────────────────────────────────────────
+  // 0=Unknown,1=Accident,2=Fog,3=Dangerous,4=Rain,5=Ice,6=Jam,
+  // 7=LaneClosed,8=RoadClosed,9=RoadWorks,10=Wind,11=Flooding,14=BrokenDown
+  const cat=row.iconCategory;
+  if(cat!=null){
+    if(cat===8) return{emoji:'🚫',color:'#ef4444',label:'Road Closure',isClosure:true};
+    if(cat===7) return{emoji:'⛔',color:'#ef4444',label:'Lane Closed',isClosure:true};
+    if(cat===1) return{emoji:'💥',color:'#f97316',label:'Accident',isClosure:false};
+    if(cat===14)return{emoji:'🚗',color:'#94a3b8',label:'Disabled Vehicle',isClosure:false};
+    if(cat===9){
+      const allLanes=ALL_LANES_RE.test(row.desc||'')||ALL_LANES_RE.test(row.location||'');
+      return allLanes
+        ?{emoji:'🚧',color:'#ef4444',label:'Construction — All Lanes Closed',isClosure:true}
+        :{emoji:'🚧',color:'#f59e0b',label:'Construction',isClosure:false};
+    }
+    if(cat===6) return{emoji:'🐢',color:'#eab308',label:'Traffic Jam',isClosure:false};
+    if(cat===11)return{emoji:'🌊',color:'#3b82f6',label:'Flooding',isClosure:true};
+    if(cat===2) return{emoji:'🌫️',color:'#7d8590',label:'Fog',isClosure:false};
+    if(cat===4) return{emoji:'🌧️',color:'#3b82f6',label:'Rain',isClosure:false};
+    if(cat===5) return{emoji:'🧊',color:'#60a5fa',label:'Ice',isClosure:false};
+    if(cat===10)return{emoji:'💨',color:'#7d8590',label:'High Wind',isClosure:false};
+    if(cat===3) return{emoji:'⚠️',color:'#eab308',label:'Dangerous Conditions',isClosure:false};
+    return{emoji:'📍',color:'#94a3b8',label:row.desc||'Incident',isClosure:false};
+  }
+  // ── Legacy text-match fallback ─────────────────────────────────────────────
   const d=(row.desc||'').toLowerCase();
   const loc=(row.location||'').toLowerCase();
   const combined=d+' '+loc;
-  // Explicit flags from parseGTISXml take priority
   if(row.isClosure)       return{emoji:'🚫',color:'#ef4444',label:'Road Closure',isClosure:true};
   if(row.isConstruction){
-    // Construction that closes all lanes is a routing barrier, same as a road closure
     const allLanes=ALL_LANES_RE.test(row.desc||'')||ALL_LANES_RE.test(row.location||'');
     return allLanes
       ?{emoji:'🚧',color:'#ef4444',label:'Construction — All Lanes Closed',isClosure:true}
       :{emoji:'🚧',color:'#f59e0b',label:'Construction',isClosure:false};
   }
-  // Fallback: text-match for legacy GeoJSON feed
   if(/clos|block/.test(combined))              return{emoji:'🚫',color:'#ef4444',label:'Road Closure',isClosure:true};
   if(/crash|accident|collision/.test(combined)) return{emoji:'💥',color:'#f97316',label:'Accident',isClosure:false};
   if(/work|construction|maintenance/.test(combined)){
@@ -1814,28 +1836,10 @@ function renderGTISMarkers(){
   map.addLayer(gtisClusterGroup);
 }
 
-// Return lat/lon points for active road closures/blocked-construction (Valhalla exclude_locations).
-// For polyline closures every coord is included so Valhalla avoids the full blocked stretch.
-// Points within 400m of the trip origin/destination are dropped — Valhalla rejects routes
-// when an exclude_location is adjacent to a waypoint (returns "no path found").
-// Hard cap: 20 total points (Valhalla's practical limit).
+// TomTom routing uses traffic=true which natively routes around closures.
+// No need to pass explicit exclude locations — kept for compatibility only.
 function getExcludeLocations(){
-  if(!userLoc||!dest)return[];
-  const[lo1,la1]=userLoc,[lo2,la2]=dest.coords;
-  const pts=[];
-  for(const r of gtisIncidents){
-    if(!gtisClassify(r).isClosure)continue;
-    // For multi-coord closures include every point, otherwise just the single location
-    const coords=(r.allCoords&&r.allCoords.length>=2)?r.allCoords:[[r.lat,r.lon]];
-    for(const[la,lo] of coords){
-      if(!la||!lo||isNaN(la)||isNaN(lo))continue;
-      if(haversine([la1,lo1],[la,lo])<=400)continue;  // too close to origin
-      if(haversine([la2,lo2],[la,lo])<=400)continue;  // too close to destination
-      pts.push({lat:la,lon:lo});
-      if(pts.length>=20)return pts; // hard cap
-    }
-  }
-  return pts;
+  return [];
 }
 
 // Build the route preview traffic warning string (incidents + congestion delays)
@@ -1865,146 +1869,62 @@ function buildTrafficWarn(){
   el.classList.add('show');
 }
 
-// Parse a GTIS XML feed (IncidentReportV2 or RoadWorkReport) into flat objects.
-// Returns [{lat, lon, desc, location, start, end, type, isClosure, allCoords}, ...]
-// Parse LMIGA/GTIS incident or road-work XML.
-// Real XML structure (confirmed from live feed):
-//   Root: <com.gcmtravel.IncidentReport> or <com.gcmtravel.RoadWorkReport>
-//   Each entry: <com.gcmtravel.IncidentReportElement> or <com.gcmtravel.RoadWorkReportElement>
-//   Coordinates in <latLongPointLoc><coord><latitude>/<longitude> as integers ÷ 100000.
-function parseGTISXml(xmlText){
-  const doc=new DOMParser().parseFromString(xmlText,'text/xml');
+// Parse TomTom Traffic Incidents v5 JSON → flat incident objects
+// compatible with gtisClassify() / renderGTISMarkers() / buildTrafficWarn().
+// iconCategory: 0=Unknown,1=Accident,2=Fog,3=Dangerous,4=Rain,5=Ice,6=Jam,
+//               7=LaneClosed,8=RoadClosed,9=RoadWorks,10=Wind,11=Flooding,14=BrokenDown
+function parseTomTomIncidents(data){
   const rows=[];
-
-  // Determine which element tag to look for based on root element name
-  const rootName=(doc.documentElement?.tagName||'').toLowerCase();
-  const isRoadWork=rootName.includes('roadwork');
-  const entryTag=isRoadWork
-    ?'com.gcmtravel.RoadWorkReportElement'
-    :'com.gcmtravel.IncidentReportElement';
-
-  const entries=[...doc.getElementsByTagName(entryTag)];
-
-  // Fallback: try older/generic tag names if LMIGA tags not found
-  const fallbackTags=['incident','roadwork','event','incidentreport','roadworkreport','alert','closure','activity'];
-  const useEntries=entries.length?entries:[...doc.getElementsByTagName('*')]
-    .filter(el=>fallbackTags.includes((el.localName||el.tagName||'').toLowerCase()));
-
-  for(const el of useEntries){
-    // Navigate into <parent> child if present (LMIGA wraps event data there)
-    const parentEl=el.getElementsByTagName('parent')[0]||el;
-
-    // Text helper: search within parentEl subtree
-    const ct=tag=>{
-      const n=parentEl.getElementsByTagName(tag)[0];
-      return n?n.textContent.trim():'';
-    };
-
-    // Coordinates: in <latLongPointLoc><coord><latitude>/<longitude> as integers ÷ 100000
-    // May appear multiple times (multiple point elements) — collect all
-    const allCoordEls=el.getElementsByTagName('latLongPointLoc');
-    const allCoords=[];
-    for(const cl of allCoordEls){
-      const rawLat=parseFloat(cl.getElementsByTagName('latitude')[0]?.textContent||'');
-      const rawLon=parseFloat(cl.getElementsByTagName('longitude')[0]?.textContent||'');
-      if(!isNaN(rawLat)&&!isNaN(rawLon)){
-        allCoords.push([rawLat/100000, rawLon/100000]);
-      }
+  for(const f of(data.incidents||[])){
+    const props=f.properties||{};
+    const geom=f.geometry||{};
+    let lat,lon,allCoords=[];
+    if(geom.type==='Point'){
+      [lon,lat]=geom.coordinates||[];
+      if(lat!=null)allCoords=[[lat,lon]];
+    }else if(geom.type==='LineString'){
+      allCoords=(geom.coordinates||[]).map(([lo,la])=>[la,lo]);
+      if(allCoords.length){[lat,lon]=allCoords[Math.floor(allCoords.length/2)];}
+    }else if(geom.type==='MultiLineString'){
+      allCoords=(geom.coordinates||[]).flatMap(line=>line.map(([lo,la])=>[la,lo]));
+      if(allCoords.length){[lat,lon]=allCoords[Math.floor(allCoords.length/2)];}
     }
-
-    // Also try attribute-based coords for older feeds
-    if(!allCoords.length){
-      const rawLat=parseFloat(el.getAttribute('lat')||el.getAttribute('latitude')||ct('latitude')||ct('lat')||'');
-      const rawLon=parseFloat(el.getAttribute('lon')||el.getAttribute('longitude')||ct('longitude')||ct('lon')||'');
-      if(!isNaN(rawLat)&&!isNaN(rawLon)){
-        // Older feeds store real decimal degrees; LMIGA stores integers ÷ 100000
-        const lat=Math.abs(rawLat)>1000?rawLat/100000:rawLat;
-        const lon=Math.abs(rawLon)>1000?rawLon/100000:rawLon;
-        allCoords.push([lat,lon]);
-      }
-    }
-
-    if(!allCoords.length) continue; // skip entries with no coordinates
-    const[lat,lon]=allCoords[0];
-
-    const typeRaw=ct('type')||'';
-    const typeStr=typeRaw.toLowerCase();
-    const desc=stripNone(cleanVal(ct('description')||ct('shortDescription')||ct('summary')||''));
-    // Prefer <roadName><name> + <type> children to avoid NONE tokens from
-    // <direction> and <qualifier> sibling elements in LMIGA XML
-    const _rnEl=parentEl.getElementsByTagName('roadName')[0];
-    let location='';
-    if(_rnEl){
-      const _rname=(_rnEl.getElementsByTagName('name')[0]?.textContent||'').replace(/NONE/g,'').trim();
-      const _rtype=(_rnEl.getElementsByTagName('type')[0]?.textContent||'').replace(/NONE/g,'').trim();
-      location=cleanVal(_rname&&_rtype?_rname+' '+_rtype:_rname||stripNone(_rnEl.textContent));
-    }
-    if(!location) location=cleanVal(ct('locationDescription')||ct('road')||ct('street')||'');
-    const combined=(desc+' '+location).toLowerCase();
-
-    const isConstruction=isRoadWork||/work|construction|maintenance|roadwork/.test(typeStr)||/construct/.test(combined);
-    const allLanesClosed=ALL_LANES_RE.test(desc)||ALL_LANES_RE.test(location);
-    const isClosure=(!isConstruction&&(/clos|block|shut/.test(typeStr)||/clos|block/.test(combined)))||(isConstruction&&allLanesClosed);
-
+    if(lat==null||lon==null||isNaN(lat)||isNaN(lon))continue;
+    const cat=props.iconCategory;
+    const isClosure=cat===8||cat===7||cat===11; // RoadClosed, LaneClosed, Flooding
+    const isConstruction=cat===9;               // RoadWorks
+    const evtDescs=(props.events||[]).map(e=>e.description).filter(Boolean);
+    const desc=evtDescs.join('; ')||props.from||'';
+    const location=[props.from,props.to].filter(Boolean).join(' to ')
+      ||(props.roadNumbers||[]).join(', ')||'';
     rows.push({
       lat,lon,allCoords,desc,location,
-      start:ct('startTime')||ct('beginTime')||'',
-      end:ct('endTime')||ct('clearTime')||'',
-      type:typeStr,
-      isConstruction,
-      isClosure:isClosure&&!isConstruction,
-      emergency:/EMERGENCY|emergency/.test(typeRaw),
+      isClosure,isConstruction,
+      iconCategory:cat,
+      start:props.startTime||null,
+      id:props.id||(lat.toFixed(5)+','+lon.toFixed(5)),
+      roads:(props.roadNumbers||[]).join(', '),
+      delay:props.delay||0,
+      magnitude:props.magnitudeOfDelay||0,
     });
   }
   return rows;
 }
 
-async function loadGTISIncidents(){
+// Load TomTom incidents for the current map viewport.
+// Replaces the old GTIS XML feeds (incidents + construction in one call).
+async function loadTomTomIncidents(){
+  if(!GTIS_WORKER)return;
   try{
-    // Try the new richer authenticated XML feed first, fall back to legacy GeoJSON
-    let parsed=null;
-    try{
-      const resp=await fetch(`${GTIS_WORKER}/gtis/incidents`);
-      if(!resp.ok)throw new Error('HTTP '+resp.status);
-      const xml=await resp.text();
-      if(xml.trimStart().startsWith('<')){
-        parsed=parseGTISXml(xml);
-      }
-    }catch(xmlErr){
-      console.warn('GTIS XML feed failed, falling back to stationOne.json:',xmlErr.message);
-    }
-
-    if(!parsed){
-      // Legacy GeoJSON fallback
-      const resp=await fetch(`${GTIS_WORKER}/lmiga/stationOne.json`);
-      if(!resp.ok)throw new Error('HTTP '+resp.status);
-      const data=await resp.json();
-      function gtisExtractCoords(geom){
-        if(!geom)return[];
-        const cv=c=>[c[1],c[0]];
-        switch(geom.type){
-          case'Point': return geom.coordinates?.length>=2?[cv(geom.coordinates)]:[];
-          case'MultiPoint':case'LineString': return(geom.coordinates||[]).filter(c=>c?.length>=2).map(cv);
-          case'MultiLineString':case'Polygon': return(geom.coordinates||[]).flat(1).filter(c=>c?.length>=2).map(cv);
-          case'GeometryCollection': return(geom.geometries||[]).flatMap(g=>gtisExtractCoords(g));
-          default:return[];
-        }
-      }
-      parsed=(data.features||[]).map(f=>{
-        const allCoords=gtisExtractCoords(f.geometry);
-        if(!allCoords.length)return null;
-        const[lat,lon]=allCoords[0];
-        return{...f.properties,lat,lon,allCoords};
-      }).filter(r=>r&&r.lat&&r.lon&&!isNaN(r.lat)&&!isNaN(r.lon));
-    }
-
-    gtisIncidents=parsed;
-    // Enrich single-point incidents in background. Updates polylines in-place via
-    // setLatLngs() — no re-render needed, so no flicker or lag on completion.
+    // bbox: minLon,minLat,maxLon,maxLat (TomTom uses lon-first order)
+    const b=map.getBounds();
+    const bbox=`${b.getWest().toFixed(6)},${b.getSouth().toFixed(6)},${b.getEast().toFixed(6)},${b.getNorth().toFixed(6)}`;
+    const resp=await fetch(`${GTIS_WORKER}/tt/incidents?bbox=${bbox}`);
+    if(!resp.ok)throw new Error('HTTP '+resp.status);
+    const data=await resp.json();
+    gtisIncidents=parseTomTomIncidents(data);
     enrichIncidentGeometry(gtisIncidents).catch(()=>{});
     if(typeof window._splashDataReady==='function')window._splashDataReady();
-
-    // Update incident count badge
     const badge=$('gtis-badge');
     if(badge){
       if(gtisIncidents.length){
@@ -2014,45 +1934,17 @@ async function loadGTISIncidents(){
         badge.style.display='none';
       }
     }
-
-    // Also load construction in parallel
-    loadGTISConstruction();
-
     renderGTISMarkers();
     buildTrafficWarn();
-
-    // Re-fetch driving route so closures feed into Valhalla exclude_locations
+    // TomTom routing uses traffic=true — re-fetch so route reflects fresh incidents
     if(dest&&userLoc&&S.mode==='driving')fetchRoute(true);
   }catch(e){
-    console.warn('GTIS load failed:',e);
+    console.warn('TomTom incidents load failed:',e.message||e);
   }
 }
 
-// Load road work / construction from the dedicated feed and merge into gtisIncidents
-async function loadGTISConstruction(){
-  try{
-    const resp=await fetch(`${GTIS_WORKER}/gtis/construction`);
-    if(!resp.ok)throw new Error('HTTP '+resp.status);
-    const xml=await resp.text();
-    if(!xml.trimStart().startsWith('<'))return;
-    const rows=parseGTISXml(xml);
-    // Tag them all as construction, merge deduplicating by lat/lon
-    const existing=new Set(gtisIncidents.map(r=>`${r.lat.toFixed(5)},${r.lon.toFixed(5)}`));
-    let added=0;
-    for(const r of rows){
-      const key=`${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
-      if(!existing.has(key)){
-        r.isConstruction=true;
-        gtisIncidents.push(r);
-        existing.add(key);
-        added++;
-      }
-    }
-    if(added>0){ renderGTISMarkers(); buildTrafficWarn(); }
-  }catch(e){
-    console.warn('GTIS construction feed failed:',e.message);
-  }
-}
+// Compatibility alias — callers that used loadGTISIncidents() still work
+const loadGTISIncidents=loadTomTomIncidents;
 
 // ── CONGESTION DATA (travelTime.json) ─────────────────────────────────────────
 // Level names from LinkTrafficReport.xml: Low/Medium/High/Severe
@@ -2252,41 +2144,12 @@ function parseTrafficXML(xmlText){
   }catch(e){console.warn('Traffic XML parse error:',e);return[];}
 }
 
+// With TomTom routing, congestionData is populated from the route's traffic sections
+// in applyTomTomRouteResult() — no separate feed fetch needed.
 async function loadCongestionData(){
-  if(!GTIS_WORKER){ setCongestionPanelState('error','No proxy configured'); return; }
-  setCongestionPanelState('loading');
-  // Primary: authenticated LinkTrafficReport feed via worker
-  // Fallback: authenticated LinkCongestionDetailedReport (has level but no tt/avg)
-  const urls=[
-    `${GTIS_WORKER}/gtis/traveltime`,
-    `${GTIS_WORKER}/gtis/congestion`,
-  ];
-  for(const url of urls){
-    try{
-      const resp=await fetch(url);
-      if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
-      const text=await resp.text();
-      const trimmed=text.trimStart();
-      if(trimmed.startsWith('[')||trimmed.startsWith('{')){
-        // JSON response (shouldn't happen for these endpoints, but handle gracefully)
-        congestionData=parseTrafficJSON(JSON.parse(text));
-      }else if(trimmed.startsWith('<')){
-        congestionData=parseTrafficXML(text);
-      }else{
-        console.warn('Congestion: unexpected response (first 300 chars):', text.slice(0,300));
-        throw new Error('Unrecognised response format');
-      }
-      if(!congestionData.length) throw new Error('Parsed 0 segments');
-      console.log(`Congestion: loaded ${congestionData.length} segments from ${url}`);
-      if(typeof window._splashDataReady==='function')window._splashDataReady();
-      renderCongestionPanel();
-      buildTrafficWarn();
-      return;
-    }catch(e){
-      console.warn(`Congestion: ${url} failed — ${e.message}`);
-    }
-  }
-  setCongestionPanelState('error','All endpoints failed — check console');
+  if(typeof window._splashDataReady==='function')window._splashDataReady();
+  renderCongestionPanel();
+  buildTrafficWarn();
 }
 
 function setCongestionPanelState(state, detail=''){ /* panel removed — data shown on map + route bar */ }
@@ -2324,15 +2187,21 @@ function clearCongestionPanel(){
 
 function enableGTISLayer(){
   gtisLayerOn=true;
-  _lastZoomMode=null; // force fresh mode evaluation
+  _lastZoomMode=null;
   [$('mvp-traffic-tog'),$('mvp-traffic-tog-m')].forEach(t=>{if(t)t.classList.add('on');});
-  applyZoomMode();        // load only what the current zoom level warrants
-  drawTrafficOverlay();   // route-specific coloring (only active when Valhalla route exists)
+  // Add TomTom traffic flow raster tiles for map-wide congestion visualization
+  if(!congMapLayer&&TT_API_KEY){
+    congMapLayer=L.tileLayer(
+      `https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{z}/{x}/{y}.png?key=${TT_API_KEY}&tileSize=256`,
+      {opacity:0.7,attribution:'Traffic © TomTom',maxZoom:22,pane:'overlayPane'}
+    ).addTo(map);
+  }
+  applyZoomMode();
+  drawTrafficOverlay();
   gtisTimer=setInterval(()=>{
-    // On refresh: only reload layers that are currently visible
+    // Refresh incidents — flow tiles update automatically (live tile service)
     const mode=zoomMode();
-    if(mode==='all'||mode==='incidents') loadGTISIncidents();
-    loadCongestionData(); // traffic data always refreshes — never gated by zoom
+    if(mode==='all'||mode==='incidents') loadTomTomIncidents();
   },GTIS_REFRESH_MS);
 }
 
@@ -2341,21 +2210,21 @@ function disableGTISLayer(){
   [$('mvp-traffic-tog'),$('mvp-traffic-tog-m')].forEach(t=>{if(t)t.classList.remove('on');});
   clearInterval(gtisTimer);gtisTimer=null;
   clearGTISMarkers();
-  // Do NOT clear trafficPolys — route traffic coloring stays visible when toggle is off.
-  if(congMapLayer){ map.removeLayer(congMapLayer); congMapLayer=null; } // hide map-wide overlay only
+  if(congMapLayer){ map.removeLayer(congMapLayer); congMapLayer=null; }
   const badge=$('gtis-badge');if(badge)badge.style.display='none';
   buildTrafficWarn();
 }
 
 // ── ROUTING ───────────────────────────────────────────────────────────────────
-// Valhalla endpoints tried in order. Both are public FOSSGIS instances with CORS.
-const VALHALLA_ENDPOINTS = [
-  'https://valhalla1.openstreetmap.de/route',
-  'https://valhalla.openstreetmap.de/route',
-];
+// Driving: TomTom Routing API (via GTIS_WORKER proxy — key stays server-side).
+// Walking: OSRM foot (public, no proxy needed).
+// OSRM car is kept as a driving fallback if TomTom is unavailable.
 const OSRM_BASE      = 'https://routing.openstreetmap.de/routed-foot/route/v1/foot';
 const OSRM_CAR_BASE  = 'https://routing.openstreetmap.de/routed-car/route/v1/driving';
 const GTIS_WORKER    = 'https://osm-routing.skymonitor-account.workers.dev';
+// TomTom API key — used CLIENT-SIDE only for traffic flow raster tiles (standard practice).
+// Incidents + routing are proxied through GTIS_WORKER so the key stays server-side there.
+const TT_API_KEY     = 'DKFn0VvF9SHmfVtjhAiNbf0QJBXHPvEZ';
 
 // Decode Valhalla's precision-6 encoded polyline → [[lat,lon], ...]
 function decodePolyline6(s){
@@ -2372,7 +2241,30 @@ function decodePolyline6(s){
   return c;
 }
 
-// Map Valhalla maneuver type → {type, modifier} compatible with stepIcon()
+// Map TomTom instruction maneuver → {type, modifier} compatible with stepIcon()
+function ttManeuverToStep(ins, distM){
+  const m=ins.maneuver||'FOLLOW_ROAD';
+  let type='turn',modifier='straight';
+  if(m==='DEPART'){type='depart';modifier='';}
+  else if(m==='ARRIVE'){type='arrive';modifier='';}
+  else if(m==='TURN_LEFT'||m==='TAKE_LEFT_LANE'){modifier='left';}
+  else if(m==='TURN_RIGHT'||m==='TAKE_RIGHT_LANE'){modifier='right';}
+  else if(m==='SHARP_LEFT'){modifier='sharp left';}
+  else if(m==='SHARP_RIGHT'){modifier='sharp right';}
+  else if(m==='BEAR_LEFT'||m==='KEEP_LEFT'){modifier='slight left';}
+  else if(m==='BEAR_RIGHT'||m==='KEEP_RIGHT'){modifier='slight right';}
+  else if(m==='MAKE_UTURN'||m==='TRY_MAKE_UTURN'){modifier='uturn';}
+  else if(m==='FOLLOW_ROAD'||m==='TAKE_MIDDLE_LANE'||m==='FOLLOW_SIGN'){modifier='straight';}
+  else if(m==='EXIT_LEFT'||m==='MOTORWAY_EXIT_LEFT'){type='off ramp';modifier='left';}
+  else if(m==='EXIT_RIGHT'||m==='MOTORWAY_EXIT_RIGHT'){type='off ramp';modifier='right';}
+  else if(m==='ENTER_MOTORWAY'||m==='ENTER_FREEWAY'||m==='ENTER_HIGHWAY'){type='merge';modifier='';}
+  else if(m==='ENTER_ROUNDABOUT'||m==='LEAVE_ROUNDABOUT'||m==='ROUNDABOUT_BACK'||m==='CONTINUE_ROUNDABOUT'){type='roundabout';modifier='';}
+  else if(m==='FERRY_CONNECTION'){type='ferry';modifier='';}
+  const street=ins.street||(Array.isArray(ins.roadNumbers)&&ins.roadNumbers.length?ins.roadNumbers.join(' / '):'');
+  return{maneuver:{type,modifier},name:street,distance:distM||0};
+}
+
+// Valhalla compatibility shim — kept so walking/OSRM path still works
 function vManeuverToStep(m){
   const t=m.type;
   let type='turn',modifier='straight';
@@ -2407,38 +2299,70 @@ function osrmManeuverToStep(step){
 }
 
 
-function applyRouteResult(mainData, silent){
-  const leg=mainData.trip.legs[0];
-  const sum=mainData.trip.summary;
-  const coords=decodePolyline6(leg.shape);
-  const steps=leg.maneuvers.map(m=>vManeuverToStep(m));
-  rawManeuvers=leg.maneuvers;
-  // Extract speed limits per step (Valhalla returns km/h with metric units → convert to mph)
-  stepSpeedLimits=leg.maneuvers.map(m=>{
-    if(m.speed_limit==null)return null;
-    // Values ≤ 2 are sentinel "unknown" — ignore them
-    if(m.speed_limit<=2)return null;
-    // Valhalla with units:'kilometers' gives km/h; convert and round to nearest 5 mph
-    const mph=m.speed_limit*0.621371;
-    return Math.round(mph/5)*5;
+// Apply a TomTom calculateRoute result.
+// Populates routeData (with trafficDelay), routeCoords, congestionData from traffic sections.
+function applyTomTomRouteResult(data,silent){
+  const route=data.routes[0];
+  const leg=route.legs[0];
+  const sum=route.summary;
+
+  // TomTom returns an array of {latitude,longitude} points — no polyline decoding needed
+  const coords=(leg.points||[]).map(p=>[p.latitude,p.longitude]);
+
+  // Convert guidance instructions to steps
+  const instructions=route.guidance?.instructions||[];
+  const steps=instructions.map((ins,i)=>{
+    const nextIns=instructions[i+1];
+    const distM=nextIns?(nextIns.routeOffsetInMeters-ins.routeOffsetInMeters):0;
+    return ttManeuverToStep(ins,distM);
   });
 
-  routeData={dist:sum.length,dur:sum.time/60,steps};
+  rawManeuvers=[];
+  stepSpeedLimits=[];
+
+  // TomTom provides the exact traffic delay — no separate calculation needed
+  const trafficDelayMin=(sum.trafficDelayInSeconds||0)/60;
+
+  // dur = base travel time without traffic (calcRouteDelay adds trafficDelay back for display)
+  routeData={
+    dist:sum.lengthInMeters/1000,
+    dur:Math.max(0,(sum.travelTimeInSeconds-(sum.trafficDelayInSeconds||0)))/60,
+    steps,
+    trafficDelay:trafficDelayMin,
+  };
   routeCoords=coords;
   arrivedFlag=false;currentStepIdx=0;navFollowing=true;
   buildStepCumDist(routeData.steps);
-  if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
 
+  // Populate congestionData from TomTom traffic sections for exact route coloring
+  const trafficSections=(route.sections||[]).filter(s=>s.sectionType==='TRAFFIC'&&(s.magnitudeOfDelay||0)>0);
+  congestionData=trafficSections.map(s=>{
+    const mag=Math.min(s.magnitudeOfDelay||0,4);
+    const lvls=['Unknown','LIGHT_CONGESTION','MEDIUM_CONGESTION','HEAVY_CONGESTION','SEVERE_CONGESTION'];
+    const level=lvls[mag];
+    const midIdx=Math.min(Math.floor((s.startPointIndex+s.endPointIndex)/2),coords.length-1);
+    const endIdx=Math.min(s.endPointIndex,coords.length-1);
+    const midPt=coords[midIdx]||coords[0];
+    const endPt=coords[endIdx]||midPt;
+    return{
+      lat:midPt[0],lon:midPt[1],lat2:endPt[0],lon2:endPt[1],
+      level,id:`tt-${s.startPointIndex}-${s.endPointIndex}`,
+      on:s.simpleCategory||'',from:'',to:'',
+      tt:(s.delayInSeconds||0)/60,avg:0,spd:s.effectiveSpeedInKmh||0,len:0,ovrAvg:false,
+      startIdx:s.startPointIndex,endIdx:s.endPointIndex,
+    };
+  });
+
+  if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
   if(routePoly)map.removeLayer(routePoly);
   routePoly=L.polyline(coords,{color:'#3b82f6',weight:6,opacity:.9,lineJoin:'round'}).addTo(map);
   drawTrafficOverlay();
 
-  if(!silent) map.fitBounds(routePoly.getBounds(),{padding:[60,60]});
+  if(!silent)map.fitBounds(routePoly.getBounds(),{padding:[60,60]});
   if(navigating){
-    const _navDelay=calcRouteDelay();
-    $('nav-time').textContent=fmtDur(routeData.dur+_navDelay);
+    $('nav-time').textContent=fmtDur(routeData.dur+trafficDelayMin);
     $('nav-dist-val').textContent=fmtDistNum(routeData.dist);
-    $('nav-arrival').textContent=calcArrival(routeData.dur+_navDelay);
+    $('nav-arrival').textContent=calcArrival(routeData.dur+trafficDelayMin);
     renderSteps();
   }else{
     showRoutePreview();
@@ -2472,6 +2396,8 @@ function findCongSegs(names){
 
 function calcRouteDelay(){
   try{
+    // Fast path: TomTom routing gives us the exact traffic delay
+    if(routeData&&routeData.trafficDelay!=null)return routeData.trafficDelay;
     if(!congestionData.length||!routeCoords.length)return 0;
     const cap=routeData?Math.min(30,routeData.dur*0.4):30;
     let extra=0;
@@ -2609,7 +2535,22 @@ function drawTrafficOverlay(){
     // Only the map-wide overlay (congMapLayer) obeys gtisLayerOn.
     if(S.mode!=='driving'||!congestionData.length||!routeCoords.length)return;
 
-    // ── Path A: spatial matching (primary — works even when 'on' is empty) ──
+    // ── TomTom path: use exact section point indices from routing response ──
+    const ttSections=congestionData.filter(s=>s.startIdx!=null&&s.endIdx!=null);
+    if(ttSections.length){
+      for(const s of ttSections){
+        const seg=routeCoords.slice(s.startIdx,s.endIdx+1);
+        if(seg.length<2)continue;
+        const color=CONG_COLOR[s.level]||'#f59e0b';
+        trafficPolys.push(
+          L.polyline(seg,{color:'rgba(0,0,0,0.3)',weight:11,opacity:1,lineJoin:'round',lineCap:'round'}).addTo(map),
+          L.polyline(seg,{color,weight:7,opacity:0.9,lineJoin:'round',lineCap:'round'}).addTo(map)
+        );
+      }
+      return;
+    }
+
+    // ── Path A: spatial matching (fallback — used for OSRM car results) ──
     // For each route point, find the worst nearby congestion segment and color that portion.
     const segsWithCoords=congestionData.filter(s=>s.lat!=null&&s.lon!=null&&(CONG_RANK[s.level]??0)>=1);
     if(segsWithCoords.length){
@@ -2742,23 +2683,38 @@ async function fetchRouteOSRM(lo1,la1,lo2,la2,silent){
   }
 }
 
-// Try each Valhalla endpoint in sequence. Returns parsed JSON or throws after all fail.
-async function tryValhalla(body){
-  let lastErr;
-  for(const url of VALHALLA_ENDPOINTS){
-    const ac=new AbortController();
-    const t=setTimeout(()=>ac.abort(),12000);
-    try{
-      let resp;
-      try{ resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ac.signal}); }
-      finally{ clearTimeout(t); }
-      if(!resp.ok){ const e=await resp.json().catch(()=>({})); throw new Error(e.error||'Valhalla '+resp.status); }
-      const data=await resp.json();
-      if(!data.trip?.legs?.length) throw new Error('Valhalla returned no route');
-      return data;
-    }catch(e){ lastErr=e; }
+// Fetch a driving route from TomTom via the GTIS_WORKER proxy.
+// Returns the parsed TomTom calculateRoute JSON or throws.
+async function fetchTomTomRoute(lo1,la1,lo2,la2,avoid){
+  if(!GTIS_WORKER)throw new Error('GTIS_WORKER not configured');
+  const body={
+    origin:{lat:la1,lon:lo1},
+    destination:{lat:la2,lon:lo2},
+    avoid:{
+      highways:!!(avoid?.highways),
+      ferries:!!(avoid?.ferries),
+      tolls:!!(avoid?.tolls),
+      unpaved:!!(avoid?.unpaved),
+    },
+  };
+  const ac=new AbortController();
+  const t=setTimeout(()=>ac.abort(),20000);
+  let resp;
+  try{
+    resp=await fetch(`${GTIS_WORKER}/route`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(body),
+      signal:ac.signal,
+    });
+  }finally{clearTimeout(t);}
+  if(!resp.ok){
+    const errObj=await resp.json().catch(()=>({error:'HTTP '+resp.status}));
+    throw new Error(errObj.error||'TomTom routing '+resp.status);
   }
-  throw lastErr||new Error('All Valhalla endpoints failed');
+  const data=await resp.json();
+  if(!data.routes?.length||!data.routes[0].legs?.length)throw new Error('TomTom returned no route');
+  return data;
 }
 
 // Apply an OSRM-car result the same way Valhalla results are applied.
@@ -2799,37 +2755,17 @@ async function fetchRoute(silent=false){
       await fetchRouteOSRM(lo1,la1,lo2,la2,silent);
       return;
     }
-    // Driving: try Valhalla first, fall back to OSRM car if it fails/times out.
-    // Only add costing_options when avoidance is actually enabled — sending it
-    // with all-default values changes routing behaviour on some Valhalla builds
-    // and was not present in the original working request.
-    const hasAvoid=S.avoid.highways||S.avoid.ferries||S.avoid.tolls;
-    const costingOpts=hasAvoid?{auto:{
-      use_highways:S.avoid.highways?0.05:1.0,
-      use_ferry:S.avoid.ferries?0.0:1.0,
-      use_tolls:S.avoid.tolls?0.0:1.0
-    }}:null;
-    const excludeLocs=getExcludeLocations();
-    const makeBody=(withExclude)=>({
-      locations:[{lon:lo1,lat:la1,type:'break'},{lon:lo2,lat:la2,type:'break'}],
-      costing:'auto',
-      directions_options:{units:'kilometers'},
-      ...(costingOpts?{costing_options:costingOpts}:{}),
-      ...(withExclude&&excludeLocs.length?{exclude_locations:excludeLocs}:{})
-    });
-    let valhallaOk=false;
+    // Driving: TomTom Routing API (with live traffic), falls back to OSRM car.
+    let ttOk=false;
     try{
-      // Try with exclude_locations, then without if it rejects
-      let data;
-      try{ data=await tryValhalla(makeBody(true)); }
-      catch(e){ if(excludeLocs.length){ data=await tryValhalla(makeBody(false)); }else{ throw e; } }
-      applyRouteResult(data,silent);
-      valhallaOk=true;
-    }catch(valErr){
-      console.warn('[fetchRoute] Valhalla failed ('+valErr.message+'), falling back to OSRM car');
+      const data=await fetchTomTomRoute(lo1,la1,lo2,la2,S.avoid);
+      applyTomTomRouteResult(data,silent);
+      ttOk=true;
+    }catch(ttErr){
+      console.warn('[fetchRoute] TomTom failed ('+ttErr.message+'), falling back to OSRM car');
     }
-    if(!valhallaOk){
-      // OSRM car fallback — always works without a proxy
+    if(!ttOk){
+      // OSRM car fallback — always available without a proxy
       await applyOSRMCarResult(lo1,la1,lo2,la2,silent);
     }
   }catch(err){console.error('[fetchRoute]',err);toast('Could not find a route. '+err.message,5000);}
@@ -5105,7 +5041,7 @@ $('transit-adv-btn').addEventListener('click',()=>{
   showTransitLegNav();
 });
 
-// ── Override fetchRoute to dispatch transit mode + traffic-aware driving ───────
+// ── Override fetchRoute to dispatch transit mode + TomTom driving ─────────────
 // (Function declarations are hoisted; the last declaration wins — this replaces the original)
 async function fetchRoute(silent=false){
   if(!dest||!userLoc)return;
@@ -5117,77 +5053,18 @@ async function fetchRoute(silent=false){
       await fetchRouteOSRM(lo1,la1,lo2,la2,silent);
       return;
     }
-    // ── Build base Valhalla request body ──────────────────────────────────────
-    const hasAvoid=S.avoid.highways||S.avoid.ferries||S.avoid.tolls;
-    const costingOpts=hasAvoid?{auto:{
-      use_highways:S.avoid.highways?0.05:1.0,
-      use_ferry:S.avoid.ferries?0.0:1.0,
-      use_tolls:S.avoid.tolls?0.0:1.0
-    }}:null;
-    const excludeLocs=getExcludeLocations();
-    const baseBody=(withExclude)=>({
-      locations:[{lon:lo1,lat:la1,type:'break'},{lon:lo2,lat:la2,type:'break'}],
-      costing:'auto',
-      directions_options:{units:'kilometers'},
-      ...(costingOpts?{costing_options:costingOpts}:{}),
-      ...(withExclude&&excludeLocs.length?{exclude_locations:excludeLocs}:{})
-    });
-
-    let valhallaOk=false;
+    // ── TomTom Routing API (live traffic built-in) ────────────────────────────
+    // TomTom with traffic=true already picks the fastest route considering current
+    // congestion — no separate rerouting phase needed. Falls back to OSRM car.
+    let ttOk=false;
     try{
-      // ── Phase 1: base route (closure avoidance, no traffic exclusions yet) ──
-      let baseData;
-      try{ baseData=await tryValhalla(baseBody(true)); }
-      catch(e){ if(excludeLocs.length){ baseData=await tryValhalla(baseBody(false)); }else{ throw e; } }
-
-      let finalData=baseData;
-      let savedMin=0;
-
-      // ── Phase 2: traffic-aware rerouting ─────────────────────────────────
-      // Only attempted when live GTIS congestion data is present.
-      // We score each candidate as (Valhalla time) + (GTIS estimated delay)
-      // and take the alternate only when it beats the base by ≥ 2 min.
-      if(congestionData.length){
-        try{
-          const baseCoords=decodePolyline6(baseData.trip.legs[0].shape);
-          const baseValMin=baseData.trip.summary.time/60;
-          const baseDelay=calcDelayForCoords(baseCoords);
-          const baseTotalMin=baseValMin+baseDelay;
-
-          // Identify HEAVY/SEVERE segments on the base route and box them out
-          const excPolys=buildTrafficExcludePolygons(baseCoords);
-
-          if(excPolys.length){
-            const altBody={...baseBody(true),exclude_polygons:excPolys};
-            const altData=await tryValhalla(altBody);
-            const altCoords=decodePolyline6(altData.trip.legs[0].shape);
-            const altValMin=altData.trip.summary.time/60;
-            const altDelay=calcDelayForCoords(altCoords);
-            const altTotalMin=altValMin+altDelay;
-
-            console.log(`[Traffic reroute] base=${baseTotalMin.toFixed(1)} min `+
-              `(Valhalla ${baseValMin.toFixed(1)} + traffic ${baseDelay.toFixed(1)}), `+
-              `alt=${altTotalMin.toFixed(1)} min `+
-              `(Valhalla ${altValMin.toFixed(1)} + traffic ${altDelay.toFixed(1)})`);
-
-            if(altTotalMin<baseTotalMin-2){
-              finalData=altData;
-              savedMin=Math.round(baseTotalMin-altTotalMin);
-            }
-          }
-        }catch(tErr){
-          // Traffic-phase failure is non-fatal; keep the base route
-          console.warn('[Traffic reroute]',tErr.message);
-        }
-      }
-
-      applyRouteResult(finalData,silent);
-      if(savedMin>=2&&!silent) toast(`🚦 Rerouted around traffic — ~${savedMin} min faster`,3500);
-      valhallaOk=true;
-    }catch(valErr){
-      console.warn('[fetchRoute] Valhalla failed ('+valErr.message+'), falling back to OSRM car');
+      const data=await fetchTomTomRoute(lo1,la1,lo2,la2,S.avoid);
+      applyTomTomRouteResult(data,silent);
+      ttOk=true;
+    }catch(ttErr){
+      console.warn('[fetchRoute] TomTom failed ('+ttErr.message+'), falling back to OSRM car');
     }
-    if(!valhallaOk){
+    if(!ttOk){
       await applyOSRMCarResult(lo1,la1,lo2,la2,silent);
     }
   }catch(err){console.error('[fetchRoute]',err);toast('Could not find a route. '+err.message,5000);}
