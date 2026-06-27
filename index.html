@@ -3473,8 +3473,10 @@ map.on('zoomend',()=>{
 map.on('moveend',()=>{
   clearTimeout(_moveDebounce);
   _moveDebounce=setTimeout(()=>{
-    if(!gtisLayerOn||!congestionData.length)return;
     const mode=zoomMode(); // always read live — never stale
+    // Reload incidents for the new viewport on every pan
+    if(gtisLayerOn&&(mode==='all'||mode==='incidents')) loadTomTomIncidents();
+    if(!gtisLayerOn||!congestionData.length)return;
     if(mode==='all'||mode==='traffic') drawMapWideCongestion();
     ensureOverpassWays();
   },300);
@@ -3909,7 +3911,7 @@ async function fetchRailGeometry(oStn, dStn, lineRef){
     return bi;
   }
 
-  // ── Source 1: Pre-baked GTFS shapes (instant, no network) ─────────────────
+  // ── Source 1: Pre-baked GTFS shapes (instant, no network) ───────a��─────────
   const shape=CTA_RAIL_SHAPES[lineKey];
   if(shape?.coords?.length>=2){
     const pts=shape.coords;
