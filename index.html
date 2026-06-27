@@ -82,6 +82,23 @@
     #rp-traffic-warn { display:none;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#fca5a5;line-height:1.4; }
     #rp-traffic-warn.show { display:block; }
 
+    /* ── Congestion panel ── */
+    #cong-panel { display:none;position:absolute;bottom:16px;left:12px;z-index:19;background:var(--panel);border:1px solid var(--border);border-radius:var(--rs);box-shadow:var(--shadow-s);width:240px;max-width:calc(100vw - 24px);overflow:hidden; }
+    #cong-panel.show { display:block; }
+    #cong-hdr { display:flex;align-items:center;gap:6px;padding:8px 10px;cursor:pointer;user-select:none;border-bottom:1px solid var(--border); }
+    #cong-hdr-title { font-size:12px;font-weight:700;flex:1; }
+    #cong-chevron { font-size:10px;color:var(--muted);transition:transform .2s; }
+    #cong-panel.collapsed #cong-chevron { transform:rotate(180deg); }
+    #cong-body { max-height:240px;overflow-y:auto; }
+    #cong-panel.collapsed #cong-body { display:none; }
+    .cong-seg { display:flex;align-items:center;gap:7px;padding:5px 10px;border-bottom:1px solid var(--border);font-size:11px; }
+    .cong-seg:last-child { border-bottom:none; }
+    .cong-dot { width:8px;height:8px;border-radius:50%;flex-shrink:0; }
+    .cong-road { font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1; }
+    .cong-spd { font-size:10px;color:var(--muted);white-space:nowrap; }
+    .cong-badges { display:flex;gap:4px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid var(--border); }
+    .cong-badge { font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700; }
+    @media(min-width:768px){ #cong-panel { bottom:20px;left:16px; } }
 
     /* ── Alternative route tabs ── */
 
@@ -1101,6 +1118,8 @@ let gtisIncidents = [], gtisMarkers = [], gtisLayerOn = false, gtisTimer = null;
 let gtisClusterGroup = null; // Leaflet.markercluster group for incident point markers
 let trafficPolys = [], rawManeuvers = [], stepSpeedLimits = [];
 const GTIS_REFRESH_MS = 5 * 60 * 1000; // 5 minutes per Travel Midwest usage rules
+// ── Travel Midwest congestion (travelTime.json) ───────────────────────────────
+let congestionData = [], congTimer = null;
 let incidents = [];
 const alerted = {}, iMarkers = {};
 let stepCumDist = [], currentStepIdx = 0, navFollowing = true;
@@ -1248,6 +1267,7 @@ let _lastZoomMode=null;
 function applyZoomMode(){
   if(!gtisLayerOn){
     clearGTISMarkers();
+    if(congMapLayer){map.removeLayer(congMapLayer);congMapLayer=null;}
     _lastZoomMode=null;
     return;
   }
@@ -1271,6 +1291,12 @@ function applyZoomMode(){
     }
   }
 
+  // ── Congestion: always on — redraw on every zoom/pan ──
+  if(!congestionData.length) loadCongestionData();
+  else drawMapWideCongestion();
+
+  // Kick off Overpass fetch covering the full congestion data extent
+  ensureOverpassWays();
 }
 // Sanitise raw XML text values that carry sentinel strings like "NONE", "N/A", "-"
 function cleanVal(v){
@@ -1671,6 +1697,20 @@ function drawClosureLine(coords,meta,popupHtml,row){
 // Used as instant fallback before the async Stadia locate result arrives.
 function synthIncidentLine(lat,lon){
   const HALF=0.0006; // ~66 m in degrees → 132 m total segment
+  let bestSeg=null,bestDist=Infinity;
+  for(const s of congestionData){
+    if(s.lat==null||s.lat2==null||s.lon==null||s.lon2==null)continue;
+    const d=haversine([s.lat,s.lon],[lat,lon]);
+    if(d<500&&d<bestDist){bestDist=d;bestSeg=s;}
+  }
+  if(bestSeg){
+    const dLat=bestSeg.lat2-bestSeg.lat,dLon=bestSeg.lon2-bestSeg.lon;
+    const len=Math.sqrt(dLat*dLat+dLon*dLon);
+    if(len>0){
+      const uLat=(dLat/len)*HALF,uLon=(dLon/len)*HALF;
+      return[[lat-uLat,lon-uLon],[lat+uLat,lon+uLon]];
+    }
+  }
   return[[lat,lon-HALF],[lat,lon+HALF]]; // E-W fallback
 }
 
@@ -1979,6 +2019,7 @@ async function loadGTISIncidents(){
     loadGTISConstruction();
 
     renderGTISMarkers();
+    buildTrafficWarn();
 
     // Re-fetch driving route so closures feed into Valhalla exclude_locations
     if(dest&&userLoc&&S.mode==='driving')fetchRoute(true);
@@ -2007,29 +2048,291 @@ async function loadGTISConstruction(){
         added++;
       }
     }
-    if(added>0){ renderGTISMarkers(); }
+    if(added>0){ renderGTISMarkers(); buildTrafficWarn(); }
   }catch(e){
     console.warn('GTIS construction feed failed:',e.message);
   }
 }
 
-// ── (Congestion overlay removed — Stadia Valhalla routing has traffic built-in) ──
-// CONG_COLOR/CONG_RANK kept as stubs so any remaining references compile.
-const CONG_COLOR={};
-const CONG_RANK={};
+// ── CONGESTION DATA (travelTime.json) ─────────────────────────────────────────
+// Level names from LinkTrafficReport.xml: Low/Medium/High/Severe
+// Level names from LinkCongestionDetailedReport.xml: Light/Moderate/Heavy/Severe
+// Both sets are handled here so either feed works correctly.
+// LMIGA congestionLevel values → display rank and color.
+// Canonical names (from live XML): NON_CONGESTION, LIGHT_CONGESTION, MEDIUM_CONGESTION,
+// HEAVY_CONGESTION, SEVERE_CONGESTION.  Legacy aliases kept for other feeds.
+const CONG_COLOR={
+  SEVERE_CONGESTION:'#ef4444', Severe:'#ef4444',
+  HEAVY_CONGESTION:'#f97316',  Heavy:'#f97316',  High:'#f97316',
+  MEDIUM_CONGESTION:'#eab308', Medium:'#eab308', Moderate:'#eab308',
+  LIGHT_CONGESTION:'#84cc16',  Light:'#84cc16',  Low:'#84cc16',
+  NON_CONGESTION:'#22c55e',    Uncongested:'#22c55e', Normal:'#22c55e',
+  Unknown:'#7d8590',
+};
+const CONG_RANK={
+  SEVERE_CONGESTION:4, Severe:4,
+  HEAVY_CONGESTION:3,  Heavy:3,  High:3,
+  MEDIUM_CONGESTION:2, Medium:2, Moderate:2,
+  LIGHT_CONGESTION:1,  Light:1,  Low:1,
+  NON_CONGESTION:0,    Uncongested:0, Normal:0,
+  Unknown:0,
+};
+const roadGeomCache={}; // ref → [[lat,lon][], ...] (cached Overpass way geometries)
+let congMapLayer=null;  // Leaflet layerGroup for the map-wide congestion overlay
 
-function parseTrafficJSON(data){ return []; } // stub — congestion feed removed
+function parseTrafficJSON(data){
+  const segs=[];
+  try{
+    const items=Array.isArray(data)?data:[data];
+    for(const item of items){
+      const tName=item.tableName||'';
+      const rows=Array.isArray(item.reportRows)?item.reportRows:[];
+      for(const row of rows){
+        const tt=parseFloat(row.tt);
+        const avg=parseFloat(row.avg);
+        segs.push({
+          table:tName, level:row.level||'Unknown',
+          on:row.on||'', from:row.from||'', to:row.to||'',
+          tt:isNaN(tt)?-1:tt, avg:isNaN(avg)?-1:avg,
+          spd:row.spd||'', len:parseFloat(row.len)||0, id:row.id||'',
+          ovrAvg:row.ovrAvg===true
+        });
+      }
+    }
+  }catch(e){console.warn('Traffic JSON parse error:',e);}
+  return segs;
+}
 
-function parseTrafficXML(xmlText){ return []; } // stub — congestion feed removed
+// Parse LinkTrafficReport.xml / LinkCongestionDetailedReport.xml from the
+// authenticated /gtis/traveltime and /gtis/congestion worker endpoints.
+// The GTIS XML uses <link> elements — attributes are tried first, then child tags.
+// Parse LMIGA/GTIS LinkTrafficReport XML.
+// Real XML structure (confirmed from live feed):
+//   <com.gcmtravel.LinkTrafficReportElement>
+//     <link>
+//       <linkElement><linkElementElement>
+//         <latLongSectionLoc>
+//           <startLatLong><latitude>4173386</latitude><longitude>-8803477</longitude></startLatLong>
+//           <endLatLong><latitude>4154213</latitude><longitude>-8796513</longitude></endLatLong>
+//         </latLongSectionLoc>
+//       </linkElementElement></linkElement>
+//       <linkID>IL-TIMS-I_355-S-61</linkID>
+//       <linkDesc>SB:I-355:Boughton Rd Plaza:I-80:IL:IL</linkDesc>
+//       <length>22940</length>          ← meters
+//       <travelTime>892</travelTime>    ← seconds (current)
+//       <speed>25.61939</speed>         ← mph (current)
+//       <congestionLevel>MEDIUM_CONGESTION</congestionLevel>
+//     </link>
+//   </com.gcmtravel.LinkTrafficReportElement>
+// Coordinates are integers × 100000 (divide by 100000 → decimal degrees).
+// No historical average field exists; delay is estimated from congestionLevel + travelTime.
+function parseTrafficXML(xmlText){
+  try{
+    const doc=new DOMParser().parseFromString(xmlText,'text/xml');
+    const segs=[];
+
+    // ── Format 1: LMIGA LinkTrafficReport — <link> elements inside <com.gcmtravel.LinkTrafficReportElement>
+    const elements=[...doc.getElementsByTagName('com.gcmtravel.LinkTrafficReportElement')];
+    if(elements.length){
+      for(const el of elements){
+        // Direct child text helper (searches the entire element subtree but picks first match)
+        const ct=tag=>{
+          const nodes=el.getElementsByTagName(tag);
+          return nodes.length?nodes[0].textContent.trim():'';
+        };
+
+        // Coordinates: <latitude>/<longitude> are integers × 100000
+        const rawLat=parseFloat(ct('latitude'));  // startLatLong comes first in doc order
+        const rawLon=parseFloat(ct('longitude'));
+
+        // endLatLong — find the second latitude/longitude pair
+        const allLats=el.getElementsByTagName('latitude');
+        const allLons=el.getElementsByTagName('longitude');
+        const lat=isNaN(rawLat)?null:rawLat/100000;
+        const lon=isNaN(rawLon)?null:rawLon/100000;
+        const lat2=(allLats.length>1)?parseFloat(allLats[1].textContent)/100000:null;
+        const lon2=(allLons.length>1)?parseFloat(allLons[1].textContent)/100000:null;
+
+        // Road name: prefer inner <roadName><name>, then parse <linkDesc> field[1]
+        const innerName=cleanVal(el.getElementsByTagName('roadName')[0]
+          ?.getElementsByTagName('name')[0]?.textContent.trim()||'');
+        const linkDesc=ct('linkDesc'); // e.g. "SB:I-355:Boughton Rd Plaza:I-80:IL:IL"
+        const descParts=linkDesc.split(':');
+        const descRoad=cleanVal(descParts.length>=2?descParts[1].trim():'');
+        const on=innerName||descRoad;
+
+        // Travel time in seconds → minutes
+        const ttSec=parseFloat(ct('travelTime'));
+        const ttMin=isNaN(ttSec)?-1:ttSec/60;
+
+        // Speed (mph). Length (meters).
+        const spd=parseFloat(ct('speed'))||0;
+        const len=parseFloat(ct('length'))||0;
+
+        // Estimate free-flow travel time: assume 65 mph (29.1 m/s) for interstates/US hwy,
+        // 40 mph (17.9 m/s) for others. Delay = max(0, actual - freeFlow).
+        const isHwy=/^(I|US)\s*[-\s]?\d/i.test(on);
+        const freeSpeedMs=isHwy?29.1:17.9; // m/s
+        const freeFlowMin=len>0?(len/freeSpeedMs)/60:-1;
+        const avg=freeFlowMin; // synthetic "average" based on free-flow assumption
+
+        const level=ct('congestionLevel')||'Unknown';
+        const id=ct('linkID');
+
+        segs.push({
+          table:'', level,
+          on, from:descParts.length>=3?descParts[2].trim():'', to:descParts.length>=4?descParts[3].trim():'',
+          tt:ttMin, avg,
+          spd, len, id,
+          ovrAvg:false,
+          lat, lon, lat2:(isNaN(lat2)?null:lat2), lon2:(isNaN(lon2)?null:lon2),
+        });
+      }
+      if(segs.length){
+        console.log('[parseTrafficXML] LMIGA format, first segment:',JSON.stringify(segs[0]));
+      }
+      return segs;
+    }
+
+    // ── Format 2: flat <link> elements with attributes/child text (older GTIS feeds)
+    const links=[...doc.getElementsByTagName('link')];
+    if(links.length){
+      for(const el of links){
+        const a=n=>el.getAttribute(n)||el.getElementsByTagName(n)[0]?.textContent||'';
+        const tt=parseFloat(a('tt'));
+        const avg=parseFloat(a('avg'));
+        const lat=parseFloat(a('lat')||a('lat1')||a('beginLat')||'');
+        const lon=parseFloat(a('lon')||a('lon1')||a('beginLon')||'');
+        const lat2=parseFloat(a('lat2')||a('endLat')||'');
+        const lon2=parseFloat(a('lon2')||a('endLon')||'');
+        const roadName=cleanVal(a('on')||a('name')||a('roadName')||a('road')||'');
+        segs.push({
+          table:'', level:a('level')||a('congestionLevel')||'Unknown',
+          on:roadName, from:a('from'), to:a('to'),
+          tt:isNaN(tt)?-1:tt, avg:isNaN(avg)?-1:avg,
+          spd:parseFloat(a('spd'))||0, len:parseFloat(a('len'))||0, id:a('id')||a('linkId')||a('linkID'),
+          ovrAvg:a('ovrAvg')==='true',
+          lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon,
+          lat2:isNaN(lat2)?null:lat2, lon2:isNaN(lon2)?null:lon2,
+        });
+      }
+      if(segs.length){
+        console.log('[parseTrafficXML] flat-link format, first segment:',JSON.stringify(segs[0]));
+      }
+      return segs;
+    }
+
+    // ── Format 3: legacy <item>/<tableName>/<reportRows> nested structure
+    const items=doc.getElementsByTagName('item');
+    for(const item of items){
+      const tName=item.getElementsByTagName('tableName')[0]?.textContent||'';
+      const outer=item.getElementsByTagName('reportRows')[0];
+      if(!outer)continue;
+      const rows=outer.getElementsByTagName('reportRows');
+      for(const row of rows){
+        const g=tag=>row.getElementsByTagName(tag)[0]?.textContent||'';
+        const tt=parseFloat(g('tt'));
+        const avg=parseFloat(g('avg'));
+        const lat=parseFloat(g('lat')||g('lat1')||'');
+        const lon=parseFloat(g('lon')||g('lon1')||'');
+        const lat2=parseFloat(g('lat2')||g('endLat')||'');
+        const lon2=parseFloat(g('lon2')||g('endLon')||'');
+        segs.push({
+          table:tName, level:g('level')||g('congestionLevel')||'Unknown',
+          on:g('on')||g('name')||g('roadName')||tName, from:g('from'), to:g('to'),
+          tt:isNaN(tt)?-1:tt, avg:isNaN(avg)?-1:avg,
+          spd:parseFloat(g('spd'))||0, len:parseFloat(g('len'))||0, id:g('id'),
+          ovrAvg:g('ovrAvg')==='true',
+          lat:isNaN(lat)?null:lat, lon:isNaN(lon)?null:lon,
+          lat2:isNaN(lat2)?null:lat2, lon2:isNaN(lon2)?null:lon2,
+        });
+      }
+    }
+    return segs;
+  }catch(e){console.warn('Traffic XML parse error:',e);return[];}
+}
+
+async function loadCongestionData(){
+  if(!GTIS_WORKER){ setCongestionPanelState('error','No proxy configured'); return; }
+  setCongestionPanelState('loading');
+  // Primary: authenticated LinkTrafficReport feed via worker
+  // Fallback: authenticated LinkCongestionDetailedReport (has level but no tt/avg)
+  const urls=[
+    `${GTIS_WORKER}/gtis/traveltime`,
+    `${GTIS_WORKER}/gtis/congestion`,
+  ];
+  for(const url of urls){
+    try{
+      const resp=await fetch(url);
+      if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+      const text=await resp.text();
+      const trimmed=text.trimStart();
+      if(trimmed.startsWith('[')||trimmed.startsWith('{')){
+        // JSON response (shouldn't happen for these endpoints, but handle gracefully)
+        congestionData=parseTrafficJSON(JSON.parse(text));
+      }else if(trimmed.startsWith('<')){
+        congestionData=parseTrafficXML(text);
+      }else{
+        console.warn('Congestion: unexpected response (first 300 chars):', text.slice(0,300));
+        throw new Error('Unrecognised response format');
+      }
+      if(!congestionData.length) throw new Error('Parsed 0 segments');
+      console.log(`Congestion: loaded ${congestionData.length} segments from ${url}`);
+      if(typeof window._splashDataReady==='function')window._splashDataReady();
+      renderCongestionPanel();
+      buildTrafficWarn();
+      return;
+    }catch(e){
+      console.warn(`Congestion: ${url} failed — ${e.message}`);
+    }
+  }
+  setCongestionPanelState('error','All endpoints failed — check console');
+}
+
+function setCongestionPanelState(state, detail=''){ /* panel removed — data shown on map + route bar */ }
+
+function updateTrafficBadge(delay){
+  const badge=$('rp-traffic-badge');
+  if(!badge)return;
+  if(delay>=1){
+    const mins=Math.round(delay);
+    badge.textContent=`+${mins} min traffic`;
+    badge.style.display='inline-block';
+  }else{
+    badge.style.display='none';
+  }
+}
+
+function renderCongestionPanel(){
+  drawMapWideCongestion(); // clears any stale overlay
+  ensureOverpassWays();    // no-op
+  if(S.mode==='driving'&&routeData){
+    drawTrafficOverlay(); // also color the active route if one exists
+    const delay=calcRouteDelay();
+    $('rp-time').textContent=fmtDurFull(routeData.dur+delay);
+    $('rp-sub').textContent=fmtDist(routeData.dist);
+    updateTrafficBadge(delay);
+    buildTrafficWarn();
+  }
+}
+
+function clearCongestionPanel(){
+  congestionData=[];
+  trafficPolys.forEach(p=>map.removeLayer(p));trafficPolys=[];
+  if(congMapLayer){ map.removeLayer(congMapLayer); congMapLayer=null; }
+}
 
 function enableGTISLayer(){
   gtisLayerOn=true;
-  _lastZoomMode=null;
+  _lastZoomMode=null; // force fresh mode evaluation
   [$('mvp-traffic-tog'),$('mvp-traffic-tog-m')].forEach(t=>{if(t)t.classList.add('on');});
-  applyZoomMode();
+  applyZoomMode();        // load only what the current zoom level warrants
+  drawTrafficOverlay();   // route-specific coloring (only active when Valhalla route exists)
   gtisTimer=setInterval(()=>{
+    // On refresh: only reload layers that are currently visible
     const mode=zoomMode();
     if(mode==='all'||mode==='incidents') loadGTISIncidents();
+    loadCongestionData(); // traffic data always refreshes — never gated by zoom
   },GTIS_REFRESH_MS);
 }
 
@@ -2038,14 +2341,15 @@ function disableGTISLayer(){
   [$('mvp-traffic-tog'),$('mvp-traffic-tog-m')].forEach(t=>{if(t)t.classList.remove('on');});
   clearInterval(gtisTimer);gtisTimer=null;
   clearGTISMarkers();
+  // Do NOT clear trafficPolys — route traffic coloring stays visible when toggle is off.
+  if(congMapLayer){ map.removeLayer(congMapLayer); congMapLayer=null; } // hide map-wide overlay only
   const badge=$('gtis-badge');if(badge)badge.style.display='none';
   buildTrafficWarn();
 }
 
 // ── ROUTING ───────────────────────────────────────────────────────────────────
-// Stadia Valhalla first (live traffic for driving), FOSSGIS public as fallback.
+// Valhalla endpoints tried in order. Both are public FOSSGIS instances with CORS.
 const VALHALLA_ENDPOINTS = [
-  `https://api.stadiamaps.com/route/v1?api_key=${STADIA_KEY}`,
   'https://valhalla1.openstreetmap.de/route',
   'https://valhalla.openstreetmap.de/route',
 ];
@@ -2127,24 +2431,267 @@ function applyRouteResult(mainData, silent){
 
   if(routePoly)map.removeLayer(routePoly);
   routePoly=L.polyline(coords,{color:'#3b82f6',weight:6,opacity:.9,lineJoin:'round'}).addTo(map);
+  drawTrafficOverlay();
 
   if(!silent) map.fitBounds(routePoly.getBounds(),{padding:[60,60]});
   if(navigating){
-    $('nav-time').textContent=fmtDur(routeData.dur);
+    const _navDelay=calcRouteDelay();
+    $('nav-time').textContent=fmtDur(routeData.dur+_navDelay);
     $('nav-dist-val').textContent=fmtDistNum(routeData.dist);
-    $('nav-arrival').textContent=calcArrival(routeData.dur);
+    $('nav-arrival').textContent=calcArrival(routeData.dur+_navDelay);
     renderSteps();
   }else{
     showRoutePreview();
   }
 }
 
-// ── Traffic / incident overlay helpers ────────────────────────────────────────
-// Congestion overlay removed — Stadia Valhalla routes are already traffic-aware.
-// trafficPolys still cleared on nav reset / route change.
-function drawTrafficOverlay(){ trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[]; }
-function drawMapWideCongestion(){} // no-op
+// ── Traffic overlay helpers ────────────────────────────────────────────────────
+// Extract route numbers from a road label: "I-90 E" → ["90"], "US-12" → ["12"]
+function roadNums(s){
+  const nums=[];
+  // Match US interstate/highway naming variants Valhalla may return:
+  // "I 90", "I-90", "I90", "Interstate 90"
+  // "US 41", "US-41", "U.S. 41", "US Highway 41"
+  // "IL 290", "IL-290", "Illinois Route 290", "Illinois 290"
+  // "Route 53", "Rte 53", "Highway 53"
+  const re=/\b(?:interstate|i|us|u\.s\.|il|illinois\s+(?:route|rte|hwy|highway)?|wi|in|mo|ohio|highway|hwy|route|rte)[\s\-\.]*(\d+)/gi;
+  let m;
+  while((m=re.exec(s))!==null)nums.push(m[1]);
+  return nums;
+}
+
+// Return ALL congestion segments whose route number overlaps with the maneuver names
+function findCongSegs(names){
+  const mNums=names.flatMap(n=>roadNums(n));
+  if(!mNums.length)return[];
+  return congestionData.filter(s=>{
+    const sNums=roadNums(s.on||s.table||'');
+    return sNums.some(n=>mNums.includes(n));
+  });
+}
+
+function calcRouteDelay(){
+  try{
+    if(!congestionData.length||!routeCoords.length)return 0;
+    const cap=routeData?Math.min(30,routeData.dur*0.4):30;
+    let extra=0;
+    const seen=new Set();
+
+    // ── Path A: spatial matching (primary — works even when 'on' field is empty) ──
+    // Only include segments that are actually congested (skip NON_CONGESTION / unknown)
+    const segsWithCoords=congestionData.filter(s=>
+      s.lat!=null&&s.lon!=null&&(CONG_RANK[s.level]??0)>=1
+    );
+    if(segsWithCoords.length){
+      // Only check 1-in-5 route coords for performance (~200m spacing at typical density)
+      const routeSample=routeCoords.filter((_,i)=>i%5===0);
+      const delayPct={
+        SEVERE_CONGESTION:0.60,Severe:0.60,
+        HEAVY_CONGESTION:0.40,Heavy:0.40,High:0.40,
+        MEDIUM_CONGESTION:0.25,Medium:0.25,Moderate:0.25,
+        LIGHT_CONGESTION:0.10,Light:0.10,Low:0.10,
+      };
+      for(const s of segsWithCoords){
+        const key=s.id||(String(s.lat)+'|'+String(s.lon));
+        if(seen.has(key))continue;
+        // Is this segment within 300m of any route point?
+        const near=routeSample.some(([rla,rlo])=>haversine([s.lat,s.lon],[rla,rlo])<300);
+        if(!near)continue;
+        seen.add(key);
+        if(s.tt>0&&s.avg>0&&s.tt>s.avg){
+          extra+=s.tt-s.avg;
+        }else if(s.tt>0){
+          // avg is synthetic free-flow estimate; fall back to level-based percentage
+          const pct=delayPct[s.level]||0;
+          if(pct>0) extra+=s.tt*pct;
+        }
+      }
+      console.log(`[calcRouteDelay] spatial: ${seen.size} matched segs, +${extra.toFixed(1)} min`);
+      return Math.min(extra,cap);
+    }
+
+    // ── Path B: road-number matching (fallback when no coords available) ──
+    if(!rawManeuvers.length)return 0;
+    const allNums=new Set(
+      rawManeuvers.flatMap(m=>
+        Array.isArray(m.street_names||m.begin_street_names)
+          ?(m.street_names||m.begin_street_names).flatMap(n=>roadNums(String(n)))
+          :[]
+      )
+    );
+    if(!allNums.size)return 0;
+    for(const s of congestionData){
+      if(!s.from&&!s.to)continue;
+      const key=s.id||(String(s.on)+'|'+String(s.from)+'|'+String(s.to));
+      if(seen.has(key))continue;
+      seen.add(key);
+      const sNums=roadNums(s.on||s.table||'');
+      if(!sNums.some(n=>allNums.has(n)))continue;
+      if(s.tt>0&&s.avg>0&&s.tt>s.avg){
+        extra+=s.tt-s.avg;
+      }else if(s.tt>0&&s.avg<=0){
+        const pct={Severe:0.50,Heavy:0.35,High:0.35,Medium:0.20,Moderate:0.20,Light:0.08,Low:0.08}[s.level]||0;
+        if(s.ovrAvg||pct>=0.20) extra+=s.tt*Math.max(pct,0.10);
+      }
+    }
+    return Math.min(extra,cap);
+  }catch(e){console.warn('[calcRouteDelay]',e);return 0;}
+}
+
+// ── calcDelayForCoords ─────────────────────────────────────────────────────────
+// Like calcRouteDelay() but operates on an arbitrary coords array so we can
+// score an alternate route without mutating the global routeCoords.
+function calcDelayForCoords(coords){
+  try{
+    if(!congestionData.length||!coords.length)return 0;
+    const segsWithCoords=congestionData.filter(s=>
+      s.lat!=null&&s.lon!=null&&(CONG_RANK[s.level]??0)>=1
+    );
+    if(!segsWithCoords.length)return 0;
+    const sample=coords.filter((_,i)=>i%5===0);
+    const delayPct={
+      SEVERE_CONGESTION:0.60,Severe:0.60,
+      HEAVY_CONGESTION:0.40,Heavy:0.40,High:0.40,
+      MEDIUM_CONGESTION:0.25,Medium:0.25,Moderate:0.25,
+      LIGHT_CONGESTION:0.10,Light:0.10,Low:0.10,
+    };
+    let extra=0;
+    const seen=new Set();
+    for(const s of segsWithCoords){
+      const key=s.id||(String(s.lat)+'|'+String(s.lon));
+      if(seen.has(key))continue;
+      const near=sample.some(([rla,rlo])=>haversine([s.lat,s.lon],[rla,rlo])<300);
+      if(!near)continue;
+      seen.add(key);
+      if(s.tt>0&&s.avg>0&&s.tt>s.avg){
+        extra+=s.tt-s.avg;
+      }else if(s.tt>0){
+        const pct=delayPct[s.level]||0;
+        if(pct>0) extra+=s.tt*pct;
+      }
+    }
+    return extra;
+  }catch(e){return 0;}
+}
+
+// ── buildTrafficExcludePolygons ────────────────────────────────────────────────
+// For each HEAVY/SEVERE congestion segment near the given route, build a small
+// bounding-box polygon (≈300 m padding) in the format Valhalla expects for
+// exclude_polygons: an array of closed [lat,lon] rings.
+function buildTrafficExcludePolygons(coords){
+  if(!congestionData.length||!coords.length)return[];
+  const PAD=0.003; // ~330 m in degrees
+  const sample=coords.filter((_,i)=>i%5===0);
+  const heavySegs=congestionData.filter(s=>
+    s.lat!=null&&s.lon!=null&&(CONG_RANK[s.level]??0)>=3 // HEAVY or SEVERE only
+  );
+  const polys=[];
+  for(const s of heavySegs){
+    const near=sample.some(([rla,rlo])=>haversine([s.lat,s.lon],[rla,rlo])<400);
+    if(!near)continue;
+    const lats=[s.lat]; if(s.lat2!=null)lats.push(s.lat2);
+    const lons=[s.lon]; if(s.lon2!=null)lons.push(s.lon2);
+    const minLat=Math.min(...lats)-PAD, maxLat=Math.max(...lats)+PAD;
+    const minLon=Math.min(...lons)-PAD, maxLon=Math.max(...lons)+PAD;
+    // Closed ring (first === last) as required by Valhalla
+    polys.push([
+      [minLat,minLon],[minLat,maxLon],[maxLat,maxLon],[maxLat,minLon],[minLat,minLon]
+    ]);
+  }
+  return polys;
+}
+
+function drawTrafficOverlay(){
+  try{
+    trafficPolys.forEach(p=>map.removeLayer(p));
+    trafficPolys=[];
+    // Route traffic coloring is always shown regardless of Live Traffic toggle.
+    // Only the map-wide overlay (congMapLayer) obeys gtisLayerOn.
+    if(S.mode!=='driving'||!congestionData.length||!routeCoords.length)return;
+
+    // ── Path A: spatial matching (primary — works even when 'on' is empty) ──
+    // For each route point, find the worst nearby congestion segment and color that portion.
+    const segsWithCoords=congestionData.filter(s=>s.lat!=null&&s.lon!=null&&(CONG_RANK[s.level]??0)>=1);
+    if(segsWithCoords.length){
+      // Walk along route coords; for each point find closest congestion segment within 400m
+      const STEP=3; // sample every 3rd route coord for performance
+      let i=0;
+      while(i<routeCoords.length){
+        const[rla,rlo]=routeCoords[i];
+        let bestSeg=null,bestRank=0;
+        for(const s of segsWithCoords){
+          if(haversine([s.lat,s.lon],[rla,rlo])>400)continue;
+          const r=CONG_RANK[s.level]??0;
+          if(r>bestRank){bestRank=r;bestSeg=s;}
+        }
+        if(bestSeg){
+          // Extend the colored segment as long as the same (or worse) congestion continues
+          let j=i+1;
+          while(j<routeCoords.length){
+            const[la2,lo2]=routeCoords[j];
+            const stillBad=segsWithCoords.some(s=>haversine([s.lat,s.lon],[la2,lo2])<400&&(CONG_RANK[s.level]??0)>=bestRank);
+            if(!stillBad)break;
+            j++;
+          }
+          const seg=routeCoords.slice(i,Math.min(j+1,routeCoords.length));
+          if(seg.length>=2){
+            const color=CONG_COLOR[bestSeg.level]||'#f59e0b';
+            trafficPolys.push(
+              L.polyline(seg,{color:'rgba(0,0,0,0.3)',weight:11,opacity:1,lineJoin:'round',lineCap:'round'}).addTo(map),
+              L.polyline(seg,{color,weight:7,opacity:0.9,lineJoin:'round',lineCap:'round'}).addTo(map)
+            );
+          }
+          i=j;
+        }else{
+          i+=STEP;
+        }
+      }
+      return;
+    }
+
+    // ── Path B: road-number matching (fallback) ──
+    if(!rawManeuvers.length)return;
+    for(const m of rawManeuvers){
+      const names=Array.isArray(m.street_names||m.begin_street_names)?
+        (m.street_names||m.begin_street_names):[];
+      if(!names.length)continue;
+      const segs=findCongSegs(names);
+      if(!segs.length)continue;
+      const best=segs.reduce((a,b)=>(CONG_RANK[b.level]??0)>(CONG_RANK[a.level]??0)?b:a);
+      if((CONG_RANK[best.level]??0)<1)continue;
+      const i0=m.begin_shape_index??0,i1=m.end_shape_index??i0;
+      if(i1<=i0)continue;
+      const seg=routeCoords.slice(i0,i1+1);
+      if(seg.length<2)continue;
+      const color=CONG_COLOR[best.level]||'#7d8590';
+      trafficPolys.push(
+        L.polyline(seg,{color:'rgba(0,0,0,0.3)',weight:11,opacity:1,lineJoin:'round',lineCap:'round'}).addTo(map),
+        L.polyline(seg,{color,weight:7,opacity:0.9,lineJoin:'round',lineCap:'round'}).addTo(map)
+      );
+    }
+  }catch(e){console.warn('[drawTrafficOverlay]',e);}
+}
+
+// Extract a normalised US road ref from a congestion segment label.
+// "I-90" → "I 90", "US-41" → "US 41", "IL-290" → "IL 290", "I90" → "I 90"
+function extractUSRef(s){
+  const m=(s||'').match(/\b(I|US|IL|WI|IN|MO|US)[\s\-\.]*(\d+)/i);
+  if(!m) return null;
+  return m[1].toUpperCase()+' '+m[2];
+}
+
+// ── Congestion & incidents ────────────────────────────────────────────────────
+// Congestion is shown on the active route only (drawTrafficOverlay).
+// Incidents/construction use allCoords geometry from the XML feed.
+// No Overpass, no static GeoJSON, no road-matching needed.
+const overpassViewportWays=[]; // always empty — kept so references compile
 function ensureOverpassWays(){} // no-op
+
+// Congestion is drawn on the active route by drawTrafficOverlay().
+// This function only clears any stale map-wide overlay layer.
+function drawMapWideCongestion(){
+  if(congMapLayer){ map.removeLayer(congMapLayer); congMapLayer=null; }
+}
 
 // Generic OSRM fetch (foot or car) — returns parsed route data or throws.
 // exclude: comma-separated OSRM class names e.g. 'motorway,ferry,toll'
@@ -2185,9 +2732,10 @@ async function fetchRouteOSRM(lo1,la1,lo2,la2,silent){
   routePoly=L.polyline(coords,{color:'#22c55e',weight:6,opacity:.9,lineJoin:'round'}).addTo(map);
   if(!silent && coords.length>1)map.fitBounds(routePoly.getBounds(),{padding:[60,60]});
   if(navigating){
-    $('nav-time').textContent=fmtDur(routeData.dur);
+    const _navDelay=calcRouteDelay();
+    $('nav-time').textContent=fmtDur(routeData.dur+_navDelay);
     $('nav-dist-val').textContent=fmtDistNum(routeData.dist);
-    $('nav-arrival').textContent=calcArrival(routeData.dur);
+    $('nav-arrival').textContent=calcArrival(routeData.dur+_navDelay);
     renderSteps();
   }else{
     showRoutePreview();
@@ -2234,9 +2782,10 @@ async function applyOSRMCarResult(lo1,la1,lo2,la2,silent){
   routePoly=L.polyline(coords,{color:'#3b82f6',weight:6,opacity:.9,lineJoin:'round'}).addTo(map);
   if(!silent&&coords.length>1)map.fitBounds(routePoly.getBounds(),{padding:[60,60]});
   if(navigating){
-    $('nav-time').textContent=fmtDur(routeData.dur);
+    const _d=calcRouteDelay();
+    $('nav-time').textContent=fmtDur(routeData.dur+_d);
     $('nav-dist-val').textContent=fmtDistNum(routeData.dist);
-    $('nav-arrival').textContent=calcArrival(routeData.dur);
+    $('nav-arrival').textContent=calcArrival(routeData.dur+_d);
     renderSteps();
   }else{ showRoutePreview(); }
 }
@@ -2290,8 +2839,10 @@ async function fetchRoute(silent=false){
 // ── UI STATE ──────────────────────────────────────────────────────────────────
 function showRoutePreview(){
   $('rp-dest-name').textContent=dest.name.split(',')[0];
-  $('rp-time').textContent=fmtDurFull(routeData.dur);
+  const _delay=S.mode==='driving'?calcRouteDelay():0;
+  $('rp-time').textContent=fmtDurFull(routeData.dur+_delay);
   $('rp-sub').textContent=fmtDist(routeData.dist);
+  updateTrafficBadge(S.mode==='driving'?_delay:0);
   document.querySelectorAll('.rp-mode').forEach(b=>b.classList.toggle('on',b.dataset.mode===S.mode));
   buildTrafficWarn();
   $('route-preview').classList.add('show');
@@ -2411,7 +2962,7 @@ function updateMapViewPopupSelection(){
 renderMapGridMobile();
 renderMapGridDesktop();
 
-// ── SETTINGS (MOBILE) ─────────────────────────────────────────────────────────
+// ── SETTINGS (MOBILE) ────────────────────────────.6�────────────────────────────
 function closeSettings(){
   $('settings-sheet').classList.remove('show');
   $('overlay-bg').classList.remove('show');
@@ -2986,8 +3537,10 @@ map.on('zoomend',()=>{
 map.on('moveend',()=>{
   clearTimeout(_moveDebounce);
   _moveDebounce=setTimeout(()=>{
-    if(!gtisLayerOn)return;
-    const mode=zoomMode();
+    if(!gtisLayerOn||!congestionData.length)return;
+    const mode=zoomMode(); // always read live — never stale
+    if(mode==='all'||mode==='traffic') drawMapWideCongestion();
+    ensureOverpassWays();
   },300);
 });
 
@@ -4580,13 +5133,56 @@ async function fetchRoute(silent=false){
       ...(withExclude&&excludeLocs.length?{exclude_locations:excludeLocs}:{})
     });
 
-    // Stadia Valhalla is traffic-aware natively — one request, no Phase 2 needed.
     let valhallaOk=false;
     try{
-      let data;
-      try{ data=await tryValhalla(baseBody(true)); }
-      catch(e){ if(excludeLocs.length){ data=await tryValhalla(baseBody(false)); }else{ throw e; } }
-      applyRouteResult(data,silent);
+      // ── Phase 1: base route (closure avoidance, no traffic exclusions yet) ──
+      let baseData;
+      try{ baseData=await tryValhalla(baseBody(true)); }
+      catch(e){ if(excludeLocs.length){ baseData=await tryValhalla(baseBody(false)); }else{ throw e; } }
+
+      let finalData=baseData;
+      let savedMin=0;
+
+      // ── Phase 2: traffic-aware rerouting ─────────────────────────────────
+      // Only attempted when live GTIS congestion data is present.
+      // We score each candidate as (Valhalla time) + (GTIS estimated delay)
+      // and take the alternate only when it beats the base by ≥ 2 min.
+      if(congestionData.length){
+        try{
+          const baseCoords=decodePolyline6(baseData.trip.legs[0].shape);
+          const baseValMin=baseData.trip.summary.time/60;
+          const baseDelay=calcDelayForCoords(baseCoords);
+          const baseTotalMin=baseValMin+baseDelay;
+
+          // Identify HEAVY/SEVERE segments on the base route and box them out
+          const excPolys=buildTrafficExcludePolygons(baseCoords);
+
+          if(excPolys.length){
+            const altBody={...baseBody(true),exclude_polygons:excPolys};
+            const altData=await tryValhalla(altBody);
+            const altCoords=decodePolyline6(altData.trip.legs[0].shape);
+            const altValMin=altData.trip.summary.time/60;
+            const altDelay=calcDelayForCoords(altCoords);
+            const altTotalMin=altValMin+altDelay;
+
+            console.log(`[Traffic reroute] base=${baseTotalMin.toFixed(1)} min `+
+              `(Valhalla ${baseValMin.toFixed(1)} + traffic ${baseDelay.toFixed(1)}), `+
+              `alt=${altTotalMin.toFixed(1)} min `+
+              `(Valhalla ${altValMin.toFixed(1)} + traffic ${altDelay.toFixed(1)})`);
+
+            if(altTotalMin<baseTotalMin-2){
+              finalData=altData;
+              savedMin=Math.round(baseTotalMin-altTotalMin);
+            }
+          }
+        }catch(tErr){
+          // Traffic-phase failure is non-fatal; keep the base route
+          console.warn('[Traffic reroute]',tErr.message);
+        }
+      }
+
+      applyRouteResult(finalData,silent);
+      if(savedMin>=2&&!silent) toast(`🚦 Rerouted around traffic — ~${savedMin} min faster`,3500);
       valhallaOk=true;
     }catch(valErr){
       console.warn('[fetchRoute] Valhalla failed ('+valErr.message+'), falling back to OSRM car');
