@@ -917,11 +917,11 @@
   <div class="rp-handle"></div>
   <div class="rp-body">
     <div class="rp-wps">
-      <div class="rp-wp">
+      <div class="rp-wp" id="rp-from-wp" style="cursor:pointer" title="Tap to change start location">
         <div class="rp-dot o"></div>
         <div class="rp-wp-txt">
           <div class="rp-wp-lbl">From</div>
-          <div class="rp-wp-name">Your location</div>
+          <div class="rp-wp-name" id="rp-origin-name">Your location</div>
         </div>
       </div>
       <div class="rp-wp">
@@ -1110,6 +1110,7 @@ const TILES = {
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let map, tileLayer, userMarker, destMarker, routePoly, traveledPoly;
 let userLoc = null, dest = null, routeData = null, routeCoords = [];
+let customOrigin = null, originName = 'Your location'; // overrides userLoc when set
 let mapStyle = 'stadia', reportMode = false, formPos = null, alertInc = null;
 let transitAutoMap=(()=>{try{const v=localStorage.getItem('waddle-transit-auto-map');return v==='true';}catch(e){return false;}})();
 const S = { mode:'driving', avoid:{ highways:false, ferries:false, unpaved:false, tolls:false } };
@@ -1845,28 +1846,7 @@ function getExcludeLocations(){
 // Build the route preview traffic warning string (incidents + congestion delays)
 function buildTrafficWarn(){
   const el=$('rp-traffic-warn');
-  if(!el)return;
-  if(!gtisLayerOn||!routeData||S.mode!=='driving'){el.classList.remove('show');return;}
-
-  const parts=[];
-
-  // ── Incidents near the route (within ~500m of any route coord) ──
-  if(gtisIncidents.length){
-    const sample=routeCoords.filter((_,i)=>i%10===0);
-    const nearby=gtisIncidents.filter(row=>{
-      const{lat:la,lon:lo}=row;
-      if(!la||!lo)return false;
-      return sample.some(([rla,rlo])=>haversine([la,lo],[rla,rlo])<500);
-    });
-    const closures=nearby.filter(r=>gtisClassify(r).isClosure);
-    const others=nearby.filter(r=>!gtisClassify(r).isClosure);
-    if(closures.length) parts.push(`🚫 ${closures.length} closure${closures.length>1?'s':''} — rerouted around ${closures.length>1?'them':'it'}`);
-    if(others.length)   parts.push(`⚠️ ${others.length} incident${others.length>1?'s':''} near route`);
-  }
-
-  if(!parts.length){el.classList.remove('show');return;}
-  el.innerHTML=parts.map(p=>`<div>${p}</div>`).join('');
-  el.classList.add('show');
+  if(el) el.classList.remove('show');
 }
 
 // Parse TomTom Traffic Incidents v5 JSON → flat incident objects
@@ -1936,8 +1916,6 @@ async function loadTomTomIncidents(){
     }
     renderGTISMarkers();
     buildTrafficWarn();
-    // TomTom routing uses traffic=true — re-fetch so route reflects fresh incidents
-    if(dest&&userLoc&&S.mode==='driving')fetchRoute(true);
   }catch(e){
     console.warn('TomTom incidents load failed:',e.message||e);
   }
@@ -2748,7 +2726,8 @@ async function applyOSRMCarResult(lo1,la1,lo2,la2,silent){
 
 async function fetchRoute(silent=false){
   if(!dest||!userLoc)return;
-  const[lo1,la1]=userLoc,[lo2,la2]=dest.coords;
+  const origin=customOrigin||userLoc;
+  const[lo1,la1]=origin,[lo2,la2]=dest.coords;
   $('loading').classList.add('show');
   try{
     if(S.mode==='foot'){
@@ -3911,7 +3890,7 @@ async function fetchRailGeometry(oStn, dStn, lineRef){
     return bi;
   }
 
-  // ── Source 1: Pre-baked GTFS shapes (instant, no network) ───────a��─────────
+  // ── Source 1: Pre-baked GTFS shapes (instant, no network) ─────────────────
   const shape=CTA_RAIL_SHAPES[lineKey];
   if(shape?.coords?.length>=2){
     const pts=shape.coords;
@@ -5048,7 +5027,8 @@ $('transit-adv-btn').addEventListener('click',()=>{
 async function fetchRoute(silent=false){
   if(!dest||!userLoc)return;
   if(S.mode==='transit'){await fetchTransitRoute(silent);return;}
-  const[lo1,la1]=userLoc,[lo2,la2]=dest.coords;
+  const origin=customOrigin||userLoc;
+  const[lo1,la1]=origin,[lo2,la2]=dest.coords;
   $('loading').classList.add('show');
   try{
     if(S.mode==='foot'){
@@ -5098,9 +5078,88 @@ function clearNav(){
   $('transit-strip').style.display='none';
   $('rp-transit-legs').style.display='none';
   $('rp-transit-legs').innerHTML='';
+  // Reset custom origin so next route starts from real GPS again
+  customOrigin=null;originName='Your location';
+  const _on=$('rp-origin-name');if(_on)_on.textContent='Your location';
   updateFabsPos();
   if(userLoc){const[lo,la]=userLoc;map.flyTo([la,lo],15);}
 }
+
+// ── FROM location picker ───────────────────────────────────────────────────────
+(function(){
+  function setCustomOrigin(lat,lon,name){
+    customOrigin=[lon,lat];
+    originName=name;
+    const el=$('rp-origin-name');
+    if(el) el.textContent=name.split(',')[0];
+    if(dest&&userLoc) fetchRoute(true);
+  }
+  function resetToGPS(){
+    customOrigin=null;originName='Your location';
+    const el=$('rp-origin-name');
+    if(el) el.textContent='Your location';
+    if(dest&&userLoc) fetchRoute(true);
+  }
+  document.addEventListener('click',function(e){
+    const wp=document.getElementById('rp-from-wp');
+    if(!wp||!wp.contains(e.target))return;
+    // Don't re-open if we clicked an input/button already inside
+    if(e.target.tagName==='INPUT'||e.target.tagName==='BUTTON')return;
+    const txt=document.getElementById('rp-origin-name');
+    if(!txt)return;
+    // Build inline editor
+    const wrap=document.createElement('div');
+    wrap.style.cssText='display:flex;gap:4px;align-items:center;width:100%';
+    const inp=document.createElement('input');
+    inp.type='text';
+    inp.placeholder='Enter start address…';
+    inp.value=originName==='Your location'?'':originName;
+    inp.style.cssText='flex:1;font-size:13px;padding:2px 6px;border:1px solid #555;border-radius:6px;background:#1e2430;color:#fff;outline:none';
+    const gpsBtn=document.createElement('button');
+    gpsBtn.textContent='📍';
+    gpsBtn.title='Use my location';
+    gpsBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:16px;padding:0 2px';
+    wrap.appendChild(inp);
+    wrap.appendChild(gpsBtn);
+    txt.replaceWith(wrap);
+    inp.focus();
+    inp.select();
+    function restore(name){
+      const newTxt=document.createElement('div');
+      newTxt.className='rp-wp-name';
+      newTxt.id='rp-origin-name';
+      newTxt.textContent=name;
+      wrap.replaceWith(newTxt);
+    }
+    gpsBtn.addEventListener('click',function(ev){
+      ev.stopPropagation();
+      restore('Your location');
+      resetToGPS();
+    });
+    async function geocodeAndSet(){
+      const q=inp.value.trim();
+      if(!q){restore(originName);return;}
+      try{
+        const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q),{headers:{'Accept-Language':'en'}});
+        const j=await r.json();
+        if(!j.length){toast('Address not found',2500);inp.focus();return;}
+        const name=j[0].display_name;
+        restore(name.split(',')[0]);
+        setCustomOrigin(parseFloat(j[0].lat),parseFloat(j[0].lon),name);
+      }catch(err){toast('Geocode error: '+err.message,3000);restore(originName);}
+    }
+    inp.addEventListener('keydown',function(ev){
+      if(ev.key==='Enter'){ev.preventDefault();geocodeAndSet();}
+      if(ev.key==='Escape'){restore(originName);}
+    });
+    inp.addEventListener('blur',function(){
+      setTimeout(()=>{
+        const still=document.getElementById('rp-origin-name');
+        if(!still) geocodeAndSet();
+      },150);
+    });
+  });
+})();
 
 // ── Override startNavigation to branch on transit mode ─────────────────────────
 function startNavigation(){
