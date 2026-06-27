@@ -1573,7 +1573,7 @@ $('search-input').addEventListener('input',e=>{
   if(dest)return;
   clearTimeout(sTimer);
   if(!q){$('search-results').classList.remove('show');return;}
-  sTimer=setTimeout(()=>doSearch(q,'results-list','search-results'),500);
+  sTimer=setTimeout(()=>doSearch(q,'results-list','search-results'),200);
 });
 $('s-clear').addEventListener('click',clearNav);
 
@@ -1585,7 +1585,7 @@ $('dsp-input').addEventListener('input',e=>{
   if(dest)return;
   clearTimeout(dspTimer);
   if(!q){$('dsp-results').classList.remove('show');return;}
-  dspTimer=setTimeout(()=>doSearch(q,'dsp-results-list','dsp-results'),500);
+  dspTimer=setTimeout(()=>doSearch(q,'dsp-results-list','dsp-results'),200);
 });
 $('dsp-clear').addEventListener('click',()=>{
   $('dsp-input').value='';
@@ -1594,17 +1594,8 @@ $('dsp-clear').addEventListener('click',()=>{
   clearNav();
 });
 
-async function doSearch(q, listId, resultsId){
-  try{
-    const d=await(await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&addressdetails=1`,{headers:{'Accept-Language':'en'}})).json();
-    if(!d.length){$(resultsId).classList.remove('show');return;}
-    $(listId).innerHTML=d.map(r=>`<div class="r-item" data-lat="${r.lat}" data-lon="${r.lon}" data-name="${encodeURIComponent(r.display_name)}"><div style="color:var(--muted);flex-shrink:0">📍</div><div style="min-width:0"><div class="r-name">${r.display_name.split(',')[0]}</div><div class="r-addr">${r.display_name}</div></div></div>`).join('');
-    $(listId).querySelectorAll('.r-item').forEach(el=>el.addEventListener('click',()=>{
-      selectDest({name:decodeURIComponent(el.dataset.name),coords:[parseFloat(el.dataset.lon),parseFloat(el.dataset.lat)]});
-    }));
-    $(resultsId).classList.add('show');
-  }catch{toast('Search failed');}
-}
+// doSearch is declared later (function hoisting — last declaration wins).
+// The active implementation uses Stadia Geocoding autocomplete.
 
 function selectDest(d){
   dest=d;
@@ -2971,7 +2962,7 @@ function updateMapViewPopupSelection(){
 renderMapGridMobile();
 renderMapGridDesktop();
 
-// ── SETTINGS (MOBILE) ─────────────────────────────────────────────────────────
+// ── SETTINGS (MOBILE) ────────────────────────────.6�────────────────────────────
 function closeSettings(){
   $('settings-sheet').classList.remove('show');
   $('overlay-bg').classList.remove('show');
@@ -3320,7 +3311,7 @@ document.addEventListener('mousedown', e => {
 // Click on map also closes (map fires mousedown first)
 map.on('mousedown', closeDsp);
 
-// ── ITEM BUILDERS ─54�───────────────────────────────────────────────────────────
+// ── ITEM BUILDERS ─────────────────────────────────────────────────────────────
 function distStr(lat, lon){
   if(!userLoc) return '';
   const d = haversine([userLoc[1], userLoc[0]], [lat, lon]);
@@ -3408,20 +3399,33 @@ function showMobHistory(){
 
 // ── REPLACE doSearch ─────────────────────────────────────────────────────────
 // (Function hoisting: the last async function doSearch wins)
+// ── Stadia Geocoding autocomplete (replaces Nominatim) ───────────────────────
+// Fuzzy-tolerant, location-biased, returns results as you type.
 async function doSearch(q, listId, resultsId){
   try{
-    const data = await (await fetch(
-      'https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(q)+'&format=json&limit=6&addressdetails=1',
-      {headers:{'Accept-Language':'en'}}
-    )).json();
-    if(!data.length){ $(resultsId).classList.remove('show'); return; }
-    const list = $(listId);
-    list.innerHTML = buildSearchItems(data);
-    wireClicks(list, selectDestPatched);
-    if(listId === 'dsp-results-list') dspMode = 'results';
-    else mobMode = 'results';
+    const focusLat=userLoc?userLoc[1]:41.8781;
+    const focusLon=userLoc?userLoc[0]:-87.6298;
+    const url=`https://api.stadiamaps.com/geocoding/v1/autocomplete?text=${encodeURIComponent(q)}`+
+      `&focus.point.lat=${focusLat}&focus.point.lon=${focusLon}`+
+      `&layers=venue,address,street&limit=6&api_key=${STADIA_KEY}`;
+    const resp=await fetch(url);
+    if(!resp.ok)throw new Error('HTTP '+resp.status);
+    const geojson=await resp.json();
+    const features=geojson.features||[];
+    if(!features.length){$(resultsId).classList.remove('show');return;}
+    // Normalise Stadia GeoJSON → format expected by buildSearchItems / wireClicks
+    const data=features.map(f=>({
+      lat:String(f.geometry.coordinates[1]),
+      lon:String(f.geometry.coordinates[0]),
+      display_name:f.properties.label||f.properties.name||q,
+    }));
+    const list=$(listId);
+    list.innerHTML=buildSearchItems(data);
+    wireClicks(list,selectDestPatched);
+    if(listId==='dsp-results-list')dspMode='results';
+    else mobMode='results';
     $(resultsId).classList.add('show');
-  }catch{ toast('Search failed'); }
+  }catch(e){console.warn('Autocomplete failed:',e.message);toast('Search failed');}
 }
 
 // ── DESKTOP INPUT WIRING (replace existing listeners with clean versions) ──────
