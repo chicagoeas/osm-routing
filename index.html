@@ -1362,7 +1362,7 @@ function stepIcon(type,mod){return arrowSVG(type,mod);}
 function isDesktop(){ return window.innerWidth >= 680; }
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
-map=L.map('map',{center:[41.8781,-87.6298],zoom:13,zoomControl:false});
+map=L.map('map',{center:[41.8781,-87.6298],zoom:13,zoomControl:false,maxZoom:22});
 // Initialize with OSM Bright (default mode is driving)
 setTile('osm_bright');
 
