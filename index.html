@@ -1248,8 +1248,8 @@ function isDesktop(){ return window.innerWidth >= 680; }
 
 // ── MAP ───────────────────────────────────────────────────────────────────────
 map=L.map('map',{center:[41.8781,-87.6298],zoom:13,zoomControl:false,maxZoom:22});
-// Initialize with OSM Bright (default mode is driving)
-setTile('osm_bright');
+// Initialize with OSM Bright — use _applyTileOnly so we don't overwrite saved prefs
+_applyTileOnly('osm_bright');
 
 map.on('click',e=>{
   if(isDesktop()){ closeMapViewPopup(); }
@@ -2100,13 +2100,17 @@ function renderCongestionPanel(){
 }
 
 function clearRouteVisuals(){
-  // Remove map layers only — leave all UI panels exactly as they are
+  // Remove map layers and reset step content — route-preview panel stays visible
   trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[];
   congestionData=[]; rawManeuvers=[];
   if(routePoly){map.removeLayer(routePoly);routePoly=null;}
   if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
   clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
   routeData=null; routeCoords=[];
+  $('steps-inner').innerHTML='';
+  $('steps-drawer').classList.remove('show');
+  $('steps-tab').classList.remove('show','open');
+  $('traffic-badge').classList.remove('show');
 }
 
 function clearCongestionPanel(){
@@ -2808,9 +2812,6 @@ document.querySelectorAll('.rp-mode').forEach(b=>b.addEventListener('click',()=>
   updateAvoidSectionVisibility();
   saveWaddleSettings();
   clearRouteVisuals(); // wipe old route/transit layers before re-fetching
-  // Auto-apply mode-appropriate map tile
-  if(S.mode==='foot') _applyTileOnly('stadia');
-  else if(S.mode==='driving') _applyTileOnly('osm_bright');
   if(dest&&userLoc)fetchRoute();
 }));
 
