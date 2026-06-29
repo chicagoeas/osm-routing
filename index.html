@@ -4871,6 +4871,13 @@ $('transit-adv-btn').addEventListener('click',()=>{
 async function fetchRoute(silent=false){
   if(!dest||!userLoc)return;
   if(S.mode==='transit'){await fetchTransitRoute(silent);return;}
+  // ── Clear overlays left by whichever mode was active before ──────────────────
+  // Bug fix 1: remove driving traffic polys when switching to walk (or any non-driving mode)
+  trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[];
+  // Bug fix 2: hide transit legs panel when switching away from transit
+  const _legEl=$('rp-transit-legs');
+  if(_legEl){_legEl.style.display='none';_legEl.innerHTML='';}
+  // ─────────────────────────────────────────────────────────────────────────────
   const origin=customOrigin||userLoc;
   const[lo1,la1]=origin,[lo2,la2]=dest.coords;
   $('loading').classList.add('show');
