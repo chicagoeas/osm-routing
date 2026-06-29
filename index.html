@@ -2094,6 +2094,23 @@ function renderCongestionPanel(){
   }
 }
 
+function clearRouteVisuals(){
+  // Clear all visual route layers without resetting the destination
+  trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[];
+  congestionData=[]; rawManeuvers=[];
+  if(routePoly){map.removeLayer(routePoly);routePoly=null;}
+  if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
+  clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
+  routeData=null; routeCoords=[];
+  // Reset directions/steps UI
+  $('route-preview').classList.remove('show');
+  $('steps-drawer').classList.remove('show');
+  $('steps-tab').classList.remove('show','open');
+  $('steps-inner').innerHTML='';
+  $('traffic-badge').classList.remove('show');
+  updateFabsPos();
+}
+
 function clearCongestionPanel(){
   congestionData=[];
   trafficPolys.forEach(p=>map.removeLayer(p));trafficPolys=[];
@@ -2792,6 +2809,7 @@ document.querySelectorAll('.rp-mode').forEach(b=>b.addEventListener('click',()=>
   document.querySelectorAll('.rp-mode').forEach(x=>x.classList.toggle('on',x.dataset.mode===S.mode));
   updateAvoidSectionVisibility();
   saveWaddleSettings();
+  clearRouteVisuals(); // wipe old route/transit layers before re-fetching
   // Auto-apply mode-appropriate map tile
   if(S.mode==='foot') _applyTileOnly('stadia');
   else if(S.mode==='driving') _applyTileOnly('osm_bright');
