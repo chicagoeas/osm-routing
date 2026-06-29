@@ -1424,7 +1424,6 @@ if(navigator.geolocation){
     }else{
       userMarker.setLatLng(ll);
     }
-    checkProx();
     if(routeCoords.length&&dest){
       updateNavLive(la,lo,spd);
       if(navigating&&Date.now()-lastReroute>30000){
@@ -1674,11 +1673,14 @@ function _addIncidentClusterMarker(lat,lon,meta,popupHtml){
 
 // ── FRC-based road hierarchy filter (mirrors Google Maps zoom behaviour) ──────
 // TomTom FRC: 0=motorway/freeway, 1=major road, 2=other major, 3=secondary, 4=local, 5-7=minor
+// Unknown FRC (null) is treated conservatively as a local road (FRC 4) at low zoom.
 function _frcAllowed(frc, zoom){
-  if(zoom>=15)return true;
-  if(zoom>=13)return(frc==null||frc<=4);
-  if(zoom>=11)return(frc==null||frc<=2);
-  return(frc!=null&&frc<=1); // below zoom 11 only interstates/major highways
+  const f = (frc==null) ? 4 : frc;  // treat unknown as local road
+  if(zoom>=15) return true;          // fully zoomed in: show everything
+  if(zoom>=13) return f<=3;          // neighbourhood: hide minor streets
+  if(zoom>=11) return f<=2;          // district: major arterials only
+  if(zoom>=9)  return f<=1;          // city: primary roads only
+  return f<=0;                       // region: motorways/freeways only
 }
 
 // ── Persist user settings to localStorage ────────────────────────────────────
@@ -1801,7 +1803,7 @@ function parseTomTomIncidents(data){
       start:props.startTime||null,
       id:props.id||(lat.toFixed(5)+','+lon.toFixed(5)),
       roads:(props.roadNumbers||[]).join(', '),
-      frc:props.frc??null,
+      frc:(props.frc!=null?parseInt(String(props.frc).replace(/\D/g,''),10):null),
       delay:props.delay||0,
       magnitude:props.magnitudeOfDelay||0,
     });
