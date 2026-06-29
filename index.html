@@ -2817,10 +2817,20 @@ window.addEventListener('resize',updateFabsPos);
 $('btn-go').addEventListener('click',startNavigation);
 $('btn-cancel-route').addEventListener('click',clearNav);
 document.querySelectorAll('.rp-mode').forEach(b=>b.addEventListener('click',()=>{
+  const _prevMode=S.mode;
   S.mode=b.dataset.mode;
   document.querySelectorAll('.rp-mode').forEach(x=>x.classList.toggle('on',x.dataset.mode===S.mode));
   updateAvoidSectionVisibility();
   saveWaddleSettings();
+  // ── Immediately clear stale overlays from the previous mode ──────────────
+  // Bug 1: remove driving traffic polys before showing a walk route
+  trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[];
+  // Bug 2: hide transit itinerary panel when leaving transit mode
+  const _tl=$('rp-transit-legs');
+  if(_tl){_tl.style.display='none';_tl.innerHTML='';}
+  // Also clear transit map layers when leaving transit
+  if(_prevMode==='transit'){clearTransitPolys();transitLegs=[];transitLegIdx=0;}
+  // ─────────────────────────────────────────────────────────────────────────
   if(dest&&(userLoc||customOrigin))fetchRoute();
 }));
 
@@ -3181,7 +3191,7 @@ function showDspHistory(){
   $('dsp-results').classList.add('show');
 }
 
-// ── MOBILE HISTORY ────────────────────────────────────────────────────────────
+// ─ �� MOBILE HISTORY ────────────────────────────────────────────────────────────
 function showMobHistory(){
   const items = loadHistory();
   if(!items.length){ closeMob(); return; }
