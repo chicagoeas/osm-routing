@@ -1671,24 +1671,27 @@ function _addIncidentClusterMarker(lat,lon,meta,popupHtml){
 // coloured line segment with the icon at the midpoint — same as multi-point closures.
 // Falls back to cluster markers when Overpass hasn't loaded yet.
 
-// ── FRC-based road hierarchy filter (mirrors Google Maps zoom behaviour) ──────
+// ── FRC-based road hierarchy filter ─────────────────────────────────────────
 // TomTom FRC: 0=motorway/freeway, 1=major road, 2=other major, 3=secondary, 4=local, 5-7=minor
-// When FRC is unknown, fall back to magnitudeOfDelay (0=unknown,1=minor,2=moderate,3=major).
+// magnitudeOfDelay: 0=unknown, 1=minor, 2=moderate, 3=major
 function _frcAllowed(frc, zoom, mag){
-  if(zoom>=15) return true;          // fully zoomed in: show everything
-  if(frc !== null){
-    // FRC known: filter by road class
-    if(zoom>=13) return frc<=3;      // neighbourhood: up to secondary roads
-    if(zoom>=11) return frc<=2;      // district: arterials and above
-    if(zoom>=9)  return frc<=1;      // city: primary roads only
-    return frc<=0;                   // region: motorways/freeways only
-  }
-  // FRC unknown: use incident severity as proxy for road importance
   const m = mag||0;
-  if(zoom>=13) return true;          // neighbourhood: show all unknown-FRC
-  if(zoom>=11) return m>=1;          // district: skip only unknown-severity
-  if(zoom>=9)  return m>=2;          // city: moderate+ incidents
-  return m>=3;                       // region: major incidents only
+  if(zoom>=15) return true;   // street level: show everything
+  if(zoom>=13) {              // neighbourhood (~1 mi view)
+    if(frc!==null) return frc<=4;
+    return m>=1;              // unknown-FRC needs at least minor severity
+  }
+  if(zoom>=11) {              // district (~5 mi view)
+    if(frc!==null) return frc<=2;
+    return m>=2;              // unknown-FRC needs moderate+
+  }
+  if(zoom>=9) {               // city (~20 mi view)
+    if(frc!==null) return frc<=1;
+    return m>=3;              // unknown-FRC needs major only
+  }
+  // region (>20 mi): only motorways (FRC 0) or major incidents
+  if(frc!==null) return frc===0;
+  return m>=3;
 }
 
 // ── Persist user settings to localStorage ────────────────────────────────────
@@ -1738,11 +1741,17 @@ function renderGTISMarkers(){
   const _curMode=zoomMode(); // always live — never rely on stale _lastZoomMode
   // In traffic-only mode no incident or construction markers are shown
   if(_curMode==='traffic'){ map.addLayer(gtisClusterGroup); return; }
-  gtisIncidents.forEach(row=>{
+
+  // Pre-filter by FRC/severity, then cap count at overview zoom to prevent clutter
+  const _zoom=map.getZoom();
+  const maxMarkers=_zoom>=14?500:_zoom>=12?80:_zoom>=10?30:15;
+  let filteredRows=gtisIncidents
+    .filter(row=>row.lat&&row.lon&&_frcAllowed(row.frc,_zoom,row.magnitude))
+    .sort((a,b)=>(b.magnitude||0)-(a.magnitude||0)) // worst first
+    .slice(0,maxMarkers);
+
+  filteredRows.forEach(row=>{
     const{lat,lon,allCoords=[]}=row;
-    if(!lat||!lon)return;
-    // FRC-based road hierarchy: skip minor-road incidents at overview zoom
-    if(!_frcAllowed(row.frc,map.getZoom(),row.magnitude))return;
     // Construction only shown at scale-bar ≤1.4 mi (mode 'all')
     if(row.isConstruction&&_curMode!=='all')return;
     const meta=gtisClassify(row);
@@ -2447,6 +2456,7 @@ function drawTrafficOverlay(){
       for(const s of ttSections){
         const seg=routeCoords.slice(s.startIdx,s.endIdx+1);
         if(seg.length<2)continue;
+        if((CONG_RANK[s.level]??0)<=0)continue; // skip free-flow segments
         const color=CONG_COLOR[s.level]||'#f59e0b';
         trafficPolys.push(
           L.polyline(seg,{color:'rgba(0,0,0,0.3)',weight:11,opacity:1,lineJoin:'round',lineCap:'round'}).addTo(map),
@@ -2576,7 +2586,7 @@ async function fetchRouteOSRM(lo1,la1,lo2,la2,silent){
   buildStepCumDist(routeData.steps);
   if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
   if(routePoly)map.removeLayer(routePoly);
-  routePoly=L.polyline(coords,{color:'#22c55e',weight:6,opacity:.9,lineJoin:'round'}).addTo(map);
+  routePoly=L.polyline(coords,{color:'#3b82f6',weight:6,opacity:.9,lineJoin:'round'}).addTo(map);
   if(!silent && coords.length>1)map.fitBounds(routePoly.getBounds(),{padding:[60,60]});
   if(navigating){
     const _navDelay=calcRouteDelay();
