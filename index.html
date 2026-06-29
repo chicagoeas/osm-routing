@@ -2110,7 +2110,7 @@ function clearRouteVisuals(){
   $('steps-inner').innerHTML='';
   $('steps-drawer').classList.remove('show');
   $('steps-tab').classList.remove('show','open');
-  $('traffic-badge').classList.remove('show');
+  $('rp-traffic-badge')?.style.setProperty('display','none');
 }
 
 function clearCongestionPanel(){
@@ -2238,7 +2238,8 @@ function osrmManeuverToStep(step){
 function applyTomTomRouteResult(data,silent){
   // Clear any leftover transit layers from a previous mode
   clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
-  $("steps-inner").innerHTML=""; $("traffic-badge").classList.remove("show");
+  const _si=$("steps-inner");if(_si)_si.innerHTML="";
+  $("rp-traffic-badge")?.style.setProperty("display","none");
   const route=data.routes[0];
   const leg=route.legs[0];
   const sum=route.summary;
@@ -2592,7 +2593,8 @@ async function fetchOSRM(base,lo1,la1,lo2,la2,exclude=''){
 // Walking via OSRM
 async function fetchRouteOSRM(lo1,la1,lo2,la2,silent){
   clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
-  $('steps-inner').innerHTML=''; $('traffic-badge').classList.remove('show');
+  const _si4=$('steps-inner');if(_si4)_si4.innerHTML='';
+  $('rp-traffic-badge')?.style.setProperty('display','none');
   const url=`${OSRM_BASE}/${lo1},${la1};${lo2},${la2}?overview=full&geometries=geojson&steps=true`;
   let resp;
   try{ resp=await fetch(url); }
@@ -2661,7 +2663,8 @@ async function fetchTomTomRoute(lo1,la1,lo2,la2,avoid){
 // Respects S.avoid toggles via OSRM's exclude query parameter.
 async function applyOSRMCarResult(lo1,la1,lo2,la2,silent){
   clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
-  $("steps-inner").innerHTML=""; $("traffic-badge").classList.remove("show");
+  const _si2=$("steps-inner");if(_si2)_si2.innerHTML="";
+  $("rp-traffic-badge")?.style.setProperty("display","none");
   const excl=[
     S.avoid?.highways?'motorway':'',
     S.avoid?.ferries?'ferry':'',
@@ -2717,20 +2720,20 @@ async function fetchRoute(silent=false){
 
 // ── UI STATE ──────────────────────────────────────────────────────────────────
 function showRoutePreview(){
-  $('rp-dest-name').textContent=dest.name.split(',')[0];
+  const _rpDest=$('rp-dest-name');if(_rpDest)_rpDest.textContent=dest.name.split(',')[0];
   const _delay=S.mode==='driving'?calcRouteDelay():0;
-  $('rp-time').textContent=fmtDurFull(routeData.dur+_delay);
-  $('rp-sub').textContent=fmtDist(routeData.dist);
+  const _rpTime=$('rp-time');if(_rpTime)_rpTime.textContent=fmtDurFull(routeData.dur+_delay);
+  const _rpSub=$('rp-sub');if(_rpSub)_rpSub.textContent=fmtDist(routeData.dist);
   updateTrafficBadge(S.mode==='driving'?_delay:0);
   document.querySelectorAll('.rp-mode').forEach(b=>b.classList.toggle('on',b.dataset.mode===S.mode));
   buildTrafficWarn();
-  $('route-preview').classList.add('show');
-  $('search-sheet').classList.remove('peek');
-  $('search-sheet').classList.add('gone');
-  $('nav-bar').classList.remove('show');
-  $('maneuver-card').classList.remove('show');
-  $('steps-drawer').classList.remove('show');
-  $('steps-tab').classList.remove('show','open');
+  $('route-preview')?.classList.add('show');
+  $('search-sheet')?.classList.remove('peek');
+  $('search-sheet')?.classList.add('gone');
+  $('nav-bar')?.classList.remove('show');
+  $('maneuver-card')?.classList.remove('show');
+  $('steps-drawer')?.classList.remove('show');
+  $('steps-tab')?.classList.remove('show','open');
   updateFabsPos();
 }
 
@@ -2793,18 +2796,18 @@ function clearNav(){
 
 function updateFabsPos(){
   let bot=86;
-  if(navigating&&$('nav-bar').classList.contains('show')){
-    let h=$('nav-bar').offsetHeight;
-    if($('steps-drawer').classList.contains('show'))h+=$('steps-drawer').offsetHeight;
+  if(navigating&&$('nav-bar')?.classList.contains('show')){
+    let h=$('nav-bar')?.offsetHeight||0;
+    if($('steps-drawer')?.classList.contains('show'))h+=($('steps-drawer')?.offsetHeight||0);
     bot=h+16;
-  }else if($('route-preview').classList.contains('show')){
-    bot=$('route-preview').offsetHeight+16;
+  }else if($('route-preview')?.classList.contains('show')){
+    bot=($('route-preview')?.offsetHeight||0)+16;
   }
-  $('fabs-r').style.bottom=`${bot}px`;
-  if($('steps-tab').classList.contains('show')){
-    const navH=$('nav-bar').offsetHeight;
-    $('steps-tab').style.bottom=`${navH+8}px`;
-    $('steps-drawer').style.bottom=`${navH}px`;
+  const _fabsR=$('fabs-r');if(_fabsR)_fabsR.style.bottom=`${bot}px`;
+  if($('steps-tab')?.classList.contains('show')){
+    const navH=$('nav-bar')?.offsetHeight||0;
+    const _stab=$('steps-tab');if(_stab)_stab.style.bottom=`${navH+8}px`;
+    const _sdraw=$('steps-drawer');if(_sdraw)_sdraw.style.bottom=`${navH}px`;
   }
 }
 updateFabsPos();
@@ -4247,7 +4250,8 @@ async function fetchTransitRoute(silent=false){
   if(routePoly){map.removeLayer(routePoly);routePoly=null;}
   if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
   routeData=null; routeCoords=[];
-  $('steps-inner').innerHTML=''; $('traffic-badge').classList.remove('show');
+  const _si3=$('steps-inner');if(_si3)_si3.innerHTML='';
+  $('rp-traffic-badge')?.style.setProperty('display','none');
   $('steps-drawer').classList.remove('show'); $('steps-tab').classList.remove('show','open');
   const[lo1,la1]=userLoc,[lo2,la2]=dest.coords;
   $('loading').classList.add('show');
@@ -4759,7 +4763,7 @@ function showTransitPreview(option){
   $('rp-time').textContent=fmtDurFull(option.totalDur);
   $('rp-sub').textContent=`${fmtDist(option.totalDist)} walking total`;
   $('rp-traffic-badge').style.display='none';
-  $('rp-traffic-warn').classList.remove('show');
+  $('rp-traffic-warn')?.classList.remove('show');
   document.querySelectorAll('.rp-mode').forEach(b=>b.classList.toggle('on',b.dataset.mode==='transit'));
   $('route-preview').classList.add('show');
   $('search-sheet').classList.remove('peek');
