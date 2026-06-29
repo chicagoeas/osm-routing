@@ -318,9 +318,10 @@
     #steps-tab.open { color: var(--accent-l); border-color: rgba(96,165,250,0.5); background: rgba(37,99,235,0.12); }
 
     /* ── Route preview (mobile) ── */
-    #route-preview { display: none; position: absolute; bottom: 0; left: 0; right: 0; z-index: 18; background: var(--panel); border-radius: var(--r) var(--r) 0 0; box-shadow: var(--shadow); }
-    #route-preview.show { display: block; }
-    .rp-handle { width: 36px; height: 4px; background: rgba(255,255,255,0.12); border-radius: 999px; margin: 10px auto; }
+    #route-preview { display: none; position: absolute; bottom: 0; left: 0; right: 0; z-index: 18; background: var(--panel); border-radius: var(--r) var(--r) 0 0; box-shadow: var(--shadow); transition: transform .3s cubic-bezier(.4,0,.2,1); }
+    #route-preview.show { display: block; transform: translateY(0); }
+    #route-preview.rp-peek { display: block; transform: translateY(calc(100% - 24px)); }
+    .rp-handle { width: 36px; height: 4px; background: rgba(255,255,255,0.12); border-radius: 999px; margin: 10px auto; cursor: pointer; }
     .rp-body { padding: 0 16px 16px; }
     .rp-wps { margin-bottom: 14px; }
     .rp-wp { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
@@ -1297,6 +1298,67 @@ $('sh-handle').addEventListener('click',()=>{
   if(peeking){$('search-sheet').classList.remove('peek');$('search-input').focus();}
   else{$('search-sheet').classList.add('peek');$('search-input').blur();}
 });
+
+// ── SWIPE GESTURE: search sheet handle ────────────────────────────────────────
+(function(){
+  let startY=0, startX=0;
+  const handle=$('sh-handle');
+  handle.addEventListener('touchstart',e=>{
+    startY=e.touches[0].clientY;
+    startX=e.touches[0].clientX;
+  },{passive:true});
+  handle.addEventListener('touchend',e=>{
+    const dy=e.changedTouches[0].clientY - startY;
+    const dx=e.changedTouches[0].clientX - startX;
+    if(Math.abs(dy)<20 || Math.abs(dx)>Math.abs(dy)*1.5) return; // too short or mostly horizontal
+    if(dy<0){
+      // swipe UP → expand
+      $('search-sheet').classList.remove('peek');
+      $('search-input').focus();
+    } else {
+      // swipe DOWN → peek / collapse
+      $('search-sheet').classList.add('peek');
+      $('search-input').blur();
+    }
+  },{passive:true});
+})();
+
+// ── SWIPE GESTURE: route-preview handle ───────────────────────────────────────
+(function(){
+  let startY=0, startX=0;
+  const rpHandle=document.querySelector('#route-preview .rp-handle');
+  if(!rpHandle) return;
+  rpHandle.addEventListener('touchstart',e=>{
+    startY=e.touches[0].clientY;
+    startX=e.touches[0].clientX;
+  },{passive:true});
+  rpHandle.addEventListener('touchend',e=>{
+    const dy=e.changedTouches[0].clientY - startY;
+    const dx=e.changedTouches[0].clientX - startX;
+    if(Math.abs(dy)<20 || Math.abs(dx)>Math.abs(dy)*1.5) return;
+    const rp=$('route-preview');
+    if(dy>0){
+      // swipe DOWN → peek (slide mostly off-screen, keep handle visible)
+      rp.classList.remove('show');
+      rp.classList.add('rp-peek');
+    } else {
+      // swipe UP → fully expand
+      rp.classList.add('show');
+      rp.classList.remove('rp-peek');
+    }
+  },{passive:true});
+  // click handle to toggle peek ↔ expanded
+  rpHandle.addEventListener('click',()=>{
+    const rp=$('route-preview');
+    if(rp.classList.contains('rp-peek')){
+      rp.classList.remove('rp-peek');
+      rp.classList.add('show');
+    } else {
+      rp.classList.remove('show');
+      rp.classList.add('rp-peek');
+    }
+  });
+})();
 $('search-input').addEventListener('input',e=>{
   const q=e.target.value.trim();
   $('s-clear').style.display=q?'flex':'none';
@@ -2901,7 +2963,7 @@ $('steps-tab').addEventListener('click',()=>{
 // SEARCH HISTORY  +  AMENITY SEARCH  +  SCALE BAR  +  TRANSIT TOGGLE
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── HISTORY STORAGE ───────────────────────────────────────────────────────────
+// ── HISTORY STORAGE ─────────────────,��─────────────────────────────────────────
 const HIST_KEY = 'wm_history';
 function loadHistory(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||'[]'); }catch{ return []; } }
 function saveToHistory(name, coords){
