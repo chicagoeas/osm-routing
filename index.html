@@ -584,9 +584,6 @@
     <button class="dsp-am-btn" data-amenity="fuel">⛽ Gas</button>
     <button class="dsp-am-btn" data-amenity="restaurant">🍔 Food</button>
     <button class="dsp-am-btn" data-amenity="cafe">☕ Coffee</button>
-    <button class="dsp-am-btn" data-amenity="parking">🅿️ Parking</button>
-    <button class="dsp-am-btn" data-amenity="hotel">🏨 Hotels</button>
-    <button class="dsp-am-btn" data-amenity="atm">🏧 ATM</button>
   </div>
   <div id="dsp-results">
     <div id="dsp-results-list"></div>
@@ -780,7 +777,6 @@
       <button class="sh-qbtn" data-amenity="fuel">⛽ Gas</button>
       <button class="sh-qbtn" data-amenity="restaurant">🍔 Food</button>
       <button class="sh-qbtn" data-amenity="cafe">☕ Coffee</button>
-      <button class="sh-qbtn" data-amenity="parking">🅿️ Parking</button>
       <button class="sh-qbtn" id="btn-settings">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
@@ -871,6 +867,7 @@ const TILES = {
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let map, tileLayer, userMarker, destMarker, routePoly, traveledPoly;
 let userLoc = null, dest = null, routeData = null, routeCoords = [];
+let _routeSeq = 0; // incremented on every clearNav; fetchRoute checks it to abort stale results
 let customOrigin = null, originName = 'Your location'; // overrides userLoc when set
 let mapStyle = 'stadia';
 const S = { mode:'driving', avoid:{ highways:false, ferries:false, unpaved:false, tolls:false } };
@@ -4700,7 +4697,10 @@ $('transit-adv-btn').addEventListener('click',()=>{
 // (Function declarations are hoisted; the last declaration wins — this replaces the original)
 async function fetchRoute(silent=false){
   if(!dest||!userLoc)return;
+  const _seq=++_routeSeq; // capture token; clearNav increments _routeSeq to cancel us
   if(S.mode==='transit'){await fetchTransitRoute(silent);return;}
+  // abort if X was pressed while transit was calculating
+  if(_seq!==_routeSeq||!dest){$('loading').classList.remove('show');return;}
   // ── Clear overlays left by whichever mode was active before ──────────────────
   // Bug fix 1: remove driving traffic polys when switching to walk (or any non-driving mode)
   trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[];
@@ -4714,14 +4714,14 @@ async function fetchRoute(silent=false){
   try{
     if(S.mode==='foot'){
       await fetchRouteOSRM(lo1,la1,lo2,la2,silent);
+      if(_seq!==_routeSeq||!dest)return;
       return;
     }
     // ── TomTom Routing API (live traffic built-in) ────────────────────────────
-    // TomTom with traffic=true already picks the fastest route considering current
-    // congestion — no separate rerouting phase needed. Falls back to OSRM car.
     let ttOk=false;
     try{
       const data=await fetchTomTomRoute(lo1,la1,lo2,la2,S.avoid);
+      if(_seq!==_routeSeq||!dest)return;
       applyTomTomRouteResult(data,silent);
       ttOk=true;
     }catch(ttErr){
@@ -4729,13 +4729,19 @@ async function fetchRoute(silent=false){
     }
     if(!ttOk){
       await applyOSRMCarResult(lo1,la1,lo2,la2,silent);
+      if(_seq!==_routeSeq||!dest)return;
     }
-  }catch(err){console.error('[fetchRoute]',err);toast('Could not find a route. '+err.message,5000);}
+  }catch(err){
+    if(_seq!==_routeSeq||!dest)return; // cancelled — swallow silently
+    console.error('[fetchRoute]',err);toast('Could not find a route. '+err.message,5000);
+  }
   finally{$('loading').classList.remove('show');}
 }
 
 // ── Override clearNav to clean transit state ───────────────────────────────────
 function clearNav(){
+  _routeSeq++; // invalidate any in-flight fetchRoute
+  $('loading').classList.remove('show'); // hide spinner immediately
   dest=null;routeData=null;routeCoords=[];
   navigating=false;arrivedFlag=false;currentStepIdx=0;navFollowing=true;stepCumDist=[];
   $('search-input').value='';$('s-clear').style.display='none';
