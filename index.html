@@ -1705,11 +1705,16 @@ function saveWaddleSettings(){
 function loadWaddleSettings(){
   try{
     const d=JSON.parse(localStorage.getItem('waddle-v2')||'{}');
-    if(d.mapStyle&&TILES[d.mapStyle]){mapStyle=d.mapStyle;}
+    if(d.mapStyle&&TILES[d.mapStyle]){
+      mapStyle=d.mapStyle;
+      _applyTileOnly(d.mapStyle); // actually switch the map layer
+    }
     if(d.mode)S.mode=d.mode;
     if(d.avoid)Object.assign(S.avoid,d.avoid);
     syncAvoidToggles();
     document.querySelectorAll('.rp-mode').forEach(x=>x.classList.toggle('on',x.dataset.mode===S.mode));
+    // Highlight the saved tile in both grids
+    document.querySelectorAll('.mvp-tile,.ss-map-btn').forEach(b=>b.classList.toggle('on',b.dataset.s===mapStyle));
     updateAvoidSectionVisibility();
     if(d.gtisOn)enableGTISLayer();
   }catch(e){}
@@ -2095,20 +2100,13 @@ function renderCongestionPanel(){
 }
 
 function clearRouteVisuals(){
-  // Clear all visual route layers without resetting the destination
+  // Remove map layers only — leave all UI panels exactly as they are
   trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[];
   congestionData=[]; rawManeuvers=[];
   if(routePoly){map.removeLayer(routePoly);routePoly=null;}
   if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
   clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
   routeData=null; routeCoords=[];
-  // Reset directions/steps UI
-  $('route-preview').classList.remove('show');
-  $('steps-drawer').classList.remove('show');
-  $('steps-tab').classList.remove('show','open');
-  $('steps-inner').innerHTML='';
-  $('traffic-badge').classList.remove('show');
-  updateFabsPos();
 }
 
 function clearCongestionPanel(){
