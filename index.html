@@ -2450,6 +2450,7 @@ async function fetchRouteOSRM(lo1,la1,lo2,la2,silent){
   if(!r.geometry?.coordinates?.length) throw new Error('OSRM route has empty geometry');
   const coords=r.geometry.coordinates.map(([lon,lat])=>[lat,lon]);
   const steps=(r.legs?.[0]?.steps||[]).map(s=>osrmManeuverToStep(s));
+  if(!dest) return; // user cancelled (pressed ✕) while fetch was in flight
   routeData={dist:r.distance/1000,dur:r.duration/60,steps};
   routeCoords=coords;
   arrivedFlag=false;currentStepIdx=0;navFollowing=true;
@@ -2564,6 +2565,7 @@ async function fetchRoute(silent=false){
 
 // ── UI STATE ──────────────────────────────────────────────────────────────────
 function showRoutePreview(){
+  if(!dest) return; // dest was cleared while route was calculating
   const _rpDest=$('rp-dest-name');if(_rpDest)_rpDest.textContent=dest.name.split(',')[0];
   const _delay=S.mode==='driving'?calcRouteDelay():0;
   const _rpTime=$('rp-time');if(_rpTime)_rpTime.textContent=fmtDurFull(routeData.dur+_delay);
@@ -4452,9 +4454,11 @@ async function fetchTransitRoute(silent=false){
       return;
     }
 
+    if(!dest) return; // user cancelled while transit was calculating
     applyTransitResult(best,silent);
 
   }catch(err){
+    if(!dest) return; // user cancelled — swallow silently
     console.error('[fetchTransitRoute]',err);
     toast('Transit routing failed — '+err.message.slice(0,60),4000);
     try{ await fetchRouteWalkFallback(lo1,la1,lo2,la2,silent); }catch{}
