@@ -889,10 +889,64 @@ let arrivedFlag = false, navigating = false, lastReroute = 0;
 
 // ── Voice guidance ─────────────────────────────────────────────────────────────
 let voiceEnabled=true,lastVoiceDist=Infinity,lastVoiceStep=-1;
+// ── TTS ABBREVIATION EXPANSION ────────────────────────────────────────────────
+// Each entry is [regex, replacement]. Add or edit entries freely.
+// Patterns use \b word boundaries so "Ave" won't match inside "Avenue", etc.
+const ABBR_RULES = [
+  // ── Directional prefixes (only before another word, e.g. "N Talman") ──
+  [/\bN(?=\s+\w)/g,  'North'],
+  [/\bS(?=\s+\w)/g,  'South'],
+  [/\bE(?=\s+\w)/g,  'East'],
+  [/\bW(?=\s+\w)/g,  'West'],
+  [/\bNE\b/g,        'Northeast'],
+  [/\bNW\b/g,        'Northwest'],
+  [/\bSE\b/g,        'Southeast'],
+  [/\bSW\b/g,        'Southwest'],
+
+  // ── Street type suffixes ──
+  [/\bAve\.?\b/gi,   'Avenue'],
+  [/\bBlvd\.?\b/gi,  'Boulevard'],
+  [/\bDr\.?\b/gi,    'Drive'],
+  [/\bLn\.?\b/gi,    'Lane'],
+  [/\bRd\.?\b/gi,    'Road'],
+  [/\bCt\.?\b/gi,    'Court'],
+  [/\bPl\.?\b/gi,    'Place'],
+  [/\bPkwy\.?\b/gi,  'Parkway'],
+  [/\bHwy\.?\b/gi,   'Highway'],
+  [/\bFwy\.?\b/gi,   'Freeway'],
+  [/\bExpy\.?\b/gi,  'Expressway'],
+  [/\bCir\.?\b/gi,   'Circle'],
+  [/\bTer\.?\b/gi,   'Terrace'],
+  [/\bTerr\.?\b/gi,  'Terrace'],
+  [/\bTrl\.?\b/gi,   'Trail'],
+  [/\bSq\.?\b/gi,    'Square'],
+  [/\bXing\.?\b/gi,  'Crossing'],
+  // "St" at end-of-phrase (before comma, end of string, or "on"/"at") → Street
+  [/\bSt\.?(?=\s*$|\s*,|\s+on\b|\s+at\b)/gi, 'Street'],
+  [/\bSt\b(?=\s+[a-z])/gi, 'Street'], // "St " followed by lowercase → Street
+
+  // ── Geographic prefixes ──
+  [/\bFt\.?\b/gi,    'Fort'],
+  [/\bMt\.?\b/gi,    'Mount'],
+  [/\bSte\.?\b/gi,   'Suite'],
+
+  // ── Roads / interstates ──
+  [/\bI-(\d+)\b/g,       'Interstate $1'],
+  [/\bUS-(\d+)\b/gi,     'US Route $1'],
+  [/\bSR-?(\d+)\b/gi,    'State Route $1'],
+  [/\bIL-(\d+)\b/gi,     'Illinois Route $1'],
+  [/\bUS Hwy\.? (\d+)\b/gi, 'US Highway $1'],
+];
+
+function expandAbbr(text){
+  ABBR_RULES.forEach(([re, rep]) => { text = text.replace(re, rep); });
+  return text;
+}
+
 function speak(text){
   if(!voiceEnabled||!window.speechSynthesis)return;
   window.speechSynthesis.cancel();
-  const u=new SpeechSynthesisUtterance(text);
+  const u=new SpeechSynthesisUtterance(expandAbbr(text));
   u.rate=1.05;u.pitch=1;u.volume=1;
   window.speechSynthesis.speak(u);
 }
