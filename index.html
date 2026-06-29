@@ -301,21 +301,24 @@
     #steps-drawer {
       display: none; position: absolute; left: 0; right: 0; z-index: 17;
       background: var(--panel); border-top: 1px solid var(--border);
-      border-radius: 16px 16px 0 0; max-height: 45dvh; overflow-y: auto;
+      border-top: none; max-height: 45dvh; overflow-y: auto;
       padding: 8px 10px 0; bottom: 92px;
-      box-shadow: 0 -4px 20px rgba(0,0,0,0.25);
     }
     #steps-drawer.show { display: block; }
     #steps-tab {
-      display: none; position: absolute; left: 50%; transform: translateX(-50%);
-      z-index: 19; background: var(--surface); border: 1px solid var(--border);
-      border-radius: 999px; padding: 6px 18px; font-size: 11px; font-weight: 700;
-      color: var(--muted); cursor: pointer; white-space: nowrap;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.3); bottom: 92px;
-      font-family: inherit; letter-spacing: .02em;
+      display: none; position: absolute; left: 0; right: 0;
+      z-index: 19; background: var(--panel); border: 1px solid var(--border);
+      border-bottom: none; border-radius: 16px 16px 0 0;
+      padding: 8px 0 6px; cursor: pointer;
+      box-shadow: 0 -4px 16px rgba(0,0,0,0.25); bottom: 92px;
+      font-family: inherit;
+    }
+    #steps-tab-pill {
+      width: 36px; height: 4px; background: rgba(255,255,255,0.18);
+      border-radius: 999px; margin: 0 auto;
     }
     #steps-tab.show { display: block; }
-    #steps-tab.open { color: var(--accent-l); border-color: rgba(96,165,250,0.5); background: rgba(37,99,235,0.12); }
+    #steps-tab.open #steps-tab-pill { background: rgba(96,165,250,0.5); }
 
     /* ── Route preview (mobile) ── */
     #route-preview { display: none; position: absolute; bottom: 0; left: 0; right: 0; z-index: 18; background: var(--panel); border-radius: var(--r) var(--r) 0 0; box-shadow: var(--shadow); transition: transform .3s cubic-bezier(.4,0,.2,1); }
@@ -712,8 +715,10 @@
   <div id="nav-safe"></div>
 </div>
 
-<!-- Steps toggle tab -->
-<button id="steps-tab">≡ Steps</button>
+<!-- Steps handle (replaces old text button) -->
+<div id="steps-tab" role="button" aria-label="Toggle turn-by-turn steps">
+  <div id="steps-tab-pill"></div>
+</div>
 
 <!-- Steps drawer -->
 <div id="steps-drawer">
@@ -1169,10 +1174,10 @@ function updateTraveledRoute(prog){
   if(routePoly)routePoly.setLatLngs(remaining);
 }
 function highlightCurrentStep(idx){
-  document.querySelectorAll('#steps-inner .step').forEach((el,i)=>{
-    el.classList.toggle('active',i===idx);
-    if(i===idx)el.scrollIntoView({behavior:'smooth',block:'nearest'});
-  });
+  // Re-render to show only upcoming steps — past steps are automatically removed
+  const steps=routeData?.steps;
+  if(!steps) return;
+  $('steps-inner').innerHTML=steps.slice(idx).map((s,i)=>`<div class="step${i===0?' active':''}"><div class="step-ic">${stepIcon(s.maneuver.type,s.maneuver.modifier)}</div><div><div class="step-txt">${s.maneuver.type==='arrive'?'Arrive at destination':(s.name||'Continue')}</div><div class="step-d">${fmtStep(s.distance)}</div></div></div>`).join('');
 }
 function updateManeuverCard(sIdx,distRem){
   const steps=routeData.steps,s=steps[sIdx];
@@ -2659,7 +2664,6 @@ function startNavigation(){
   $('steps-drawer').classList.remove('show');
   $('steps-tab').classList.add('show');
   $('steps-tab').classList.remove('open');
-  $('steps-tab').textContent='≡ Steps ▲';
   $('nav-time').textContent=fmtDur(routeData.dur);
   $('nav-dist-val').textContent=fmtDistNum(routeData.dist);
   $('nav-arrival').textContent=calcArrival(routeData.dur);
@@ -2877,13 +2881,34 @@ $('mc-mute').addEventListener('click',()=>{
   else speak('Voice guidance on');
 });
 $('nav-end-btn').addEventListener('click',clearNav);
-$('steps-tab').addEventListener('click',()=>{
-  const open=$('steps-drawer').classList.contains('show');
-  $('steps-drawer').classList.toggle('show',!open);
-  $('steps-tab').classList.toggle('open',!open);
-  $('steps-tab').textContent=open?'≡ Steps ▲':'≡ Steps ▼';
-  updateFabsPos();
-});
+// ── SWIPE / CLICK: steps handle ───────────────────────────────────────────────
+(function(){
+  let startY=0, startX=0;
+  const tab=$('steps-tab');
+  function openSteps(){
+    $('steps-drawer').classList.add('show');
+    tab.classList.add('open');
+    updateFabsPos();
+  }
+  function closeSteps(){
+    $('steps-drawer').classList.remove('show');
+    tab.classList.remove('open');
+    updateFabsPos();
+  }
+  tab.addEventListener('click',()=>{
+    $('steps-drawer').classList.contains('show')?closeSteps():openSteps();
+  });
+  tab.addEventListener('touchstart',e=>{
+    startY=e.touches[0].clientY;
+    startX=e.touches[0].clientX;
+  },{passive:true});
+  tab.addEventListener('touchend',e=>{
+    const dy=e.changedTouches[0].clientY-startY;
+    const dx=e.changedTouches[0].clientX-startX;
+    if(Math.abs(dy)<20||Math.abs(dx)>Math.abs(dy)*1.5) return;
+    dy<0?openSteps():closeSteps();
+  },{passive:true});
+})();
 
 
 // ── SPLASH SCREEN ─────────────────────────────────────────────────────────────
@@ -2963,7 +2988,7 @@ $('steps-tab').addEventListener('click',()=>{
 // SEARCH HISTORY  +  AMENITY SEARCH  +  SCALE BAR  +  TRANSIT TOGGLE
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── HISTORY STORAGE ─────────────────,��─────────────────────────────────────────
+// ── HISTORY STORAGE ───────────────────────────────────────────────────────────
 const HIST_KEY = 'wm_history';
 function loadHistory(){ try{ return JSON.parse(localStorage.getItem(HIST_KEY)||'[]'); }catch{ return []; } }
 function saveToHistory(name, coords){
@@ -4678,7 +4703,6 @@ function startTransitNavigation(){
   $('nav-bar').classList.add('show');
   $('steps-tab').classList.add('show');
   $('steps-tab').classList.remove('open');
-  $('steps-tab').textContent='≡ Steps ▲';
   $('nav-time').textContent=fmtDur(transitLegs.reduce((s,l)=>s+l.dur+((l.waitMin)||0),0));
   $('nav-arrival').textContent=calcArrival(transitLegs.reduce((s,l)=>s+l.dur+((l.waitMin)||0),0));
   $('nav-progress-fill').style.width='0%';
@@ -4925,7 +4949,6 @@ function startNavigation(){
   $('steps-drawer').classList.remove('show');
   $('steps-tab').classList.add('show');
   $('steps-tab').classList.remove('open');
-  $('steps-tab').textContent='≡ Steps ▲';
   $('nav-time').textContent=fmtDur(routeData.dur);
   $('nav-dist-val').textContent=fmtDistNum(routeData.dist);
   $('nav-arrival').textContent=calcArrival(routeData.dur);
