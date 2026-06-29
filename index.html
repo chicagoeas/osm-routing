@@ -822,6 +822,27 @@
         <div class="tog" id="av-tolls-m"></div>
       </div>
     </div>
+    <div class="ss-sec">
+      <div class="ss-sec-lbl">Advanced</div>
+      <div class="ss-row">
+        <div>
+          <div class="ss-row-lbl">GPS Simulator</div>
+          <div class="ss-row-sub">Simulate driving along a planned route for testing</div>
+        </div>
+        <div class="tog" id="gps-sim-tog"></div>
+      </div>
+      <div class="ss-row" id="sim-speed-row" style="display:none">
+        <div>
+          <div class="ss-row-lbl">Simulator Speed</div>
+          <div class="ss-row-sub">Speed used during simulation</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button id="sim-spd-dec" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);width:26px;height:26px;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center">−</button>
+          <span id="sim-spd-val" style="font-size:14px;min-width:52px;text-align:center">40 mph</span>
+          <button id="sim-spd-inc" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);width:26px;height:26px;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center">+</button>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -889,6 +910,9 @@ const GTIS_REFRESH_MS = 5 * 60 * 1000; // 5 minutes per Travel Midwest usage rul
 let congestionData = [], congTimer = null;
 let stepCumDist = [], currentStepIdx = 0, navFollowing = true;
 let arrivedFlag = false, navigating = false, lastReroute = 0;
+// ── GPS Simulator state ───────────────────────────────────────────────────────
+let gpsSimEnabled = false, simSpeedMph = 40, simSpeedEditing = false;
+let simTimer = null, simPosM = 0, simCumDist = [];
 
 // ── Voice guidance ─────────────────────────────────────────────────────────────
 let voiceEnabled=true,lastVoiceDist=Infinity,lastVoiceStep=-1,navSpeedMs=0;
@@ -1304,6 +1328,7 @@ function updateNavLive(la,lo,speedMs){
   updateManeuverCard(sIdx,prog.distRem);
   if(speedMs!=null&&speedMs>=0){
     navSpeedMs=speedMs;
+    if(!simSpeedEditing){
     const mph=Math.round(speedMs*2.23694);
     $('current-speed-display').textContent=`${mph} mph`;
     // Speed limit sign
@@ -1319,6 +1344,7 @@ function updateNavLive(la,lo,speedMs){
     } else if(sign){
       sign.classList.add('hidden');
     }
+    } // end !simSpeedEditing
   }
   if(navFollowing)map.panTo([la,lo],{animate:true,duration:0.8,easeLinearity:0.5});
   const[dLo,dLa]=dest.coords;
@@ -1326,8 +1352,54 @@ function updateNavLive(la,lo,speedMs){
 }
 function doArrived(){
   arrivedFlag=true;$('maneuver-card').classList.remove('show');
+  stopGpsSim();
   toast('🎉 You have arrived!',4000);
   setTimeout(clearNav,4000);
+}
+
+// ── GPS SIMULATOR ENGINE ───────────────────────────────────────────────────────
+function simBuildCumDist(){
+  simCumDist=[0];
+  for(let i=0;i<routeCoords.length-1;i++){
+    simCumDist.push(simCumDist[i]+haversine(routeCoords[i],routeCoords[i+1]));
+  }
+}
+function simPosAtM(m){
+  const total=simCumDist[simCumDist.length-1]||0;
+  if(!total||m>=total) return routeCoords[routeCoords.length-1]?[...routeCoords[routeCoords.length-1]]:[null,null];
+  let lo=0,hi=simCumDist.length-2;
+  while(lo<hi){const mid=(lo+hi+1)>>1;if(simCumDist[mid]<=m)lo=mid;else hi=mid-1;}
+  const t=(m-simCumDist[lo])/(simCumDist[lo+1]-simCumDist[lo]||1);
+  const[la1,lo1]=routeCoords[lo],[la2,lo2]=routeCoords[lo+1];
+  return[la1+(la2-la1)*t,lo1+(lo2-lo1)*t];
+}
+function simTick(){
+  if(!navigating||!gpsSimEnabled||!routeCoords.length)return;
+  const speedMs=simSpeedMph*0.44704;
+  simPosM=Math.min(simPosM+speedMs,(simCumDist[simCumDist.length-1]||0));
+  const[la,lo]=simPosAtM(simPosM);
+  if(la==null)return;
+  userLoc=[lo,la];
+  if(userMarker)userMarker.setLatLng([la,lo]);
+  updateNavLive(la,lo,speedMs);
+}
+function startGpsSim(){
+  if(!gpsSimEnabled||S.mode==='transit')return;
+  stopGpsSim();
+  simPosM=0;
+  simBuildCumDist();
+  if(routeCoords.length){
+    const[la,lo]=routeCoords[0];
+    userLoc=[lo,la];
+    if(userMarker)userMarker.setLatLng([la,lo]);
+    else userMarker=L.marker([la,lo],{icon:makeLocIcon(),zIndexOffset:1000,interactive:false}).addTo(map);
+    map.flyTo([la,lo],16);
+  }
+  simTimer=setInterval(simTick,1000);
+  toast('🎮 GPS Simulator active — click speed display to adjust',3000);
+}
+function stopGpsSim(){
+  if(simTimer){clearInterval(simTimer);simTimer=null;}
 }
 
 // ── GEO ───────────────────────────────────────────────────────────────────────
@@ -2735,7 +2807,7 @@ function startNavigation(){
   renderSteps();
   updateManeuverCard(0,routeData.dist*1000);
   $('mc-follow').classList.remove('paused');$('mc-follow').textContent='📍';
-  if(userLoc){const[lo,la]=userLoc;map.flyTo([la,lo],16);}
+  if(!gpsSimEnabled&&userLoc){const[lo,la]=userLoc;map.flyTo([la,lo],16);}
   updateFabsPos();
   // Kick off voice with first instruction
   const s0=routeData.steps[0];
@@ -2744,9 +2816,11 @@ function startNavigation(){
     const dist=fmtStep(s0.distance);
     speak(`Starting navigation. In ${dist}, ${dir}${s0.name?' on '+s0.name:''}`);
   }
+  startGpsSim();
 }
 
 function clearNav(){
+  stopGpsSim();
   dest=null;routeData=null;routeCoords=[];
   navigating=false;arrivedFlag=false;currentStepIdx=0;navFollowing=true;stepCumDist=[];
   lastVoiceStep=-1;lastVoiceDist=Infinity;window.speechSynthesis?.cancel();
@@ -4919,6 +4993,7 @@ async function fetchRoute(silent=false){
 
 // ── Override clearNav to clean transit state ───────────────────────────────────
 function clearNav(){
+  stopGpsSim();
   _routeSeq++; // invalidate any in-flight fetchRoute
   $('loading').classList.remove('show'); // hide spinner immediately
   dest=null;routeData=null;routeCoords=[];
@@ -5129,9 +5204,65 @@ function startNavigation(){
   renderSteps();
   updateManeuverCard(0,routeData.dist*1000);
   $('mc-follow').classList.remove('paused');$('mc-follow').textContent='📍';
-  if(userLoc){const[lo,la]=userLoc;map.flyTo([la,lo],16);}
+  if(!gpsSimEnabled&&userLoc){const[lo,la]=userLoc;map.flyTo([la,lo],16);}
   updateFabsPos();
+  startGpsSim();
 }
+
+// ── GPS Simulator settings wiring ──────────────────────────────────────────────
+(function(){
+  function updateSpdLabel(){
+    const el=$('sim-spd-val');
+    if(el) el.textContent=`${simSpeedMph} mph`;
+  }
+  const tog=$('gps-sim-tog');
+  if(tog){
+    tog.addEventListener('click',function(){
+      gpsSimEnabled=!gpsSimEnabled;
+      tog.classList.toggle('on',gpsSimEnabled);
+      const row=$('sim-speed-row');
+      if(row) row.style.display=gpsSimEnabled?'flex':'none';
+      if(!gpsSimEnabled) stopGpsSim();
+      toast(gpsSimEnabled?'🎮 GPS Simulator ON — plan a route then tap Start':'GPS Simulator OFF',2500);
+    });
+  }
+  const dec=$('sim-spd-dec'),inc=$('sim-spd-inc');
+  if(dec) dec.addEventListener('click',function(){simSpeedMph=Math.max(5,simSpeedMph-5);updateSpdLabel();});
+  if(inc) inc.addEventListener('click',function(){simSpeedMph=Math.min(120,simSpeedMph+5);updateSpdLabel();});
+
+  // Click speed display in nav bar to set sim speed inline (desktop + sim only)
+  const spdEl=$('current-speed-display');
+  if(spdEl){
+    spdEl.style.cursor='default';
+    spdEl.addEventListener('click',function(){
+      if(!gpsSimEnabled||window.innerWidth<680||!navigating) return;
+      const inp=document.createElement('input');
+      inp.type='number';inp.min=5;inp.max=120;inp.value=simSpeedMph;
+      inp.style.cssText='width:52px;font-size:13px;padding:2px 6px;border:1px solid var(--accent-l);border-radius:6px;background:#1e2430;color:#fff;outline:none;text-align:center';
+      const lbl=document.createElement('span');
+      lbl.textContent=' mph';lbl.style.color='var(--muted)';
+      spdEl.innerHTML='';
+      spdEl.appendChild(inp);
+      spdEl.appendChild(lbl);
+      spdEl.style.cursor='text';
+      simSpeedEditing=true;
+      inp.focus();inp.select();
+      function commit(){
+        simSpeedEditing=false;
+        const v=parseInt(inp.value)||simSpeedMph;
+        simSpeedMph=Math.max(5,Math.min(120,v));
+        updateSpdLabel(); // keep settings panel in sync
+        spdEl.textContent=`${simSpeedMph} mph`;
+        spdEl.style.cursor='pointer';
+      }
+      inp.addEventListener('keydown',ev=>{
+        if(ev.key==='Enter'){ev.preventDefault();commit();}
+        if(ev.key==='Escape'){simSpeedEditing=false;spdEl.textContent=`${simSpeedMph} mph`;spdEl.style.cursor='pointer';}
+      });
+      inp.addEventListener('blur',function(){setTimeout(commit,80);});
+    });
+  }
+})();
 
 </script>
 </body>
