@@ -373,8 +373,8 @@
     .r-addr { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
     /* ── Settings sheet (mobile only) ── */
-    #settings-sheet { display: none; position: absolute; bottom: 0; left: 0; right: 0; z-index: 25; background: var(--panel); border-radius: var(--r) var(--r) 0 0; box-shadow: var(--shadow); max-height: 88dvh; overflow-y: auto; }
-    #settings-sheet.show { display: block; }
+    #settings-sheet, #mob-settings-sheet { display: none; position: absolute; bottom: 0; left: 0; right: 0; z-index: 25; background: var(--panel); border-radius: var(--r) var(--r) 0 0; box-shadow: var(--shadow); max-height: 88dvh; overflow-y: auto; }
+    #settings-sheet.show, #mob-settings-sheet.show { display: block; }
     .ss-handle { width: 36px; height: 4px; background: rgba(255,255,255,0.12); border-radius: 999px; margin: 10px auto; }
     .ss-hdr { display: flex; align-items: center; justify-content: space-between; padding: 0 18px 14px; border-bottom: 1px solid var(--border); }
     .ss-title { font-size: 16px; font-weight: 700; }
@@ -390,6 +390,7 @@
       #fabs-r { display: none; }
       #search-sheet { display: none !important; }
       #settings-sheet { display: none !important; }
+      #mob-settings-sheet { display: none !important; }
       #steps-tab { display: none !important; }
 
       /* ── Maneuver card: top-center on desktop ── */
@@ -943,6 +944,36 @@
     </div>
   </div>
   <div id="search-results"><div id="results-list"></div></div>
+</div>
+
+<!-- Settings sheet (mobile, avoidances) -->
+<div id="mob-settings-sheet">
+  <div class="ss-handle"></div>
+  <div class="ss-hdr">
+    <span class="ss-title">Settings</span>
+    <button class="x-btn" id="close-mob-settings"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+  <div class="ss-body">
+    <div class="ss-sec">
+      <div class="ss-sec-lbl">Avoid (driving only)</div>
+      <div class="ss-row">
+        <div><div class="ss-row-lbl">Highways</div></div>
+        <div class="tog" id="av-highways-m"></div>
+      </div>
+      <div class="ss-row">
+        <div><div class="ss-row-lbl">Ferries</div></div>
+        <div class="tog" id="av-ferries-m"></div>
+      </div>
+      <div class="ss-row">
+        <div><div class="ss-row-lbl">Unpaved Roads</div><div class="ss-row-sub">Limited support via OSM data</div></div>
+        <div class="tog" id="av-unpaved-m"></div>
+      </div>
+      <div class="ss-row">
+        <div><div class="ss-row-lbl">Tolls</div></div>
+        <div class="tog" id="av-tolls-m"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Map view sheet (mobile) -->
@@ -2833,13 +2864,23 @@ $('fab-layers').addEventListener('click',()=>{
   if(!isDesktop()){$('settings-sheet').classList.add('show');$('overlay-bg').classList.add('show');}
 });
 $('btn-settings').addEventListener('click',()=>{
-  $('settings-sheet').classList.add('show');$('overlay-bg').classList.add('show');
+  $('mob-settings-sheet').classList.add('show');$('overlay-bg').classList.add('show');
   $('search-sheet').classList.add('peek');
+});
+$('close-mob-settings').addEventListener('click',()=>{
+  $('mob-settings-sheet').classList.remove('show');$('overlay-bg').classList.remove('show');
 });
 $('close-settings').addEventListener('click',closeSettings);
 $('overlay-bg').addEventListener('click',()=>{
   closeSettings();
   closeSettingsModal();
+  $('mob-settings-sheet').classList.remove('show');
+});
+
+// Mobile avoid toggles
+['highways','ferries','unpaved','tolls'].forEach(k=>{
+  const mEl=$(`av-${k}-m`);
+  if(mEl) mEl.addEventListener('click',function(){ S.avoid[k]=!S.avoid[k];this.classList.toggle('on',S.avoid[k]);syncAvoidToggles();saveWaddleSettings();if(dest&&userLoc)fetchRoute(); });
 });
 
 // Desktop avoid toggles
@@ -2850,7 +2891,8 @@ $('overlay-bg').addEventListener('click',()=>{
 
 function syncAvoidToggles(){
   ['highways','ferries','unpaved','tolls'].forEach(k=>{
-    const d=$(`av-${k}`);
+    const m=$(`av-${k}-m`),d=$(`av-${k}`);
+    if(m)m.classList.toggle('on',S.avoid[k]);
     if(d)d.classList.toggle('on',S.avoid[k]);
   });
 }
