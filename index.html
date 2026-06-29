@@ -739,6 +739,9 @@
           <div class="rp-wp-name" id="rp-origin-name">Your location</div>
         </div>
       </div>
+      <div style="display:flex;align-items:center;justify-content:flex-end;padding:2px 0">
+        <button id="btn-flip-route" title="Swap start and destination" style="background:none;border:1px solid var(--border);border-radius:50%;width:26px;height:26px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:14px;transition:background .15s;flex-shrink:0">⇅</button>
+      </div>
       <div class="rp-wp">
         <div class="rp-dot d"></div>
         <div class="rp-wp-txt">
@@ -888,7 +891,7 @@ let stepCumDist = [], currentStepIdx = 0, navFollowing = true;
 let arrivedFlag = false, navigating = false, lastReroute = 0;
 
 // ── Voice guidance ─────────────────────────────────────────────────────────────
-let voiceEnabled=true,lastVoiceDist=Infinity,lastVoiceStep=-1;
+let voiceEnabled=true,lastVoiceDist=Infinity,lastVoiceStep=-1,navSpeedMs=0;
 // ── TTS ABBREVIATION EXPANSION ────────────────────────────────────────────────
 // Each entry is [regex, replacement]. Add or edit entries freely.
 // Patterns use \b word boundaries so "Ave" won't match inside "Avenue", etc.
@@ -1262,15 +1265,21 @@ function updateManeuverCard(sIdx,distRem){
   card.classList.remove('mc-warn','mc-alert');
   if(ft<150)card.classList.add('mc-alert');
   else if(ft<400)card.classList.add('mc-warn');
-  // Voice guidance — announce at ~1500ft, ~500ft, and on the turn (<100ft)
+  // Voice guidance — thresholds scale with speed so highway cues come earlier
   if(sIdx!==lastVoiceStep){lastVoiceStep=sIdx;lastVoiceDist=Infinity;}
   const dir=stepLabel(s.maneuver.type,s.maneuver.modifier);
   const street=s.name?` on ${s.name}`:'';
-  if(ft<100&&lastVoiceDist>100){
+  // navSpeedMs is updated every GPS tick in updateNavLive
+  const mph=navSpeedMs*2.23694;
+  // early/mid/close thresholds in feet, scaled by speed bucket
+  const [thEarly,thMid,thClose]=mph>45?[3500,900,150]:mph>25?[1800,600,120]:[900,350,80];
+  if(ft<thClose&&lastVoiceDist>thClose){
     lastVoiceDist=ft;speak(`${dir}${street}`);
-  }else if(ft<500&&lastVoiceDist>500){
-    lastVoiceDist=ft;speak(`In 500 feet, ${dir}${street}`);
-  }else if(ft<1500&&lastVoiceDist>1500){
+  }else if(ft<thMid&&lastVoiceDist>thMid){
+    lastVoiceDist=ft;
+    const nearFt=Math.max(100,Math.round(ft/100)*100);
+    speak(`In ${nearFt} feet, ${dir}${street}`);
+  }else if(ft<thEarly&&lastVoiceDist>thEarly){
     lastVoiceDist=ft;
     const dist=mi<0.3?`${Math.round(ft/100)*100} feet`:`${Math.round(mi*10)/10} miles`;
     speak(`In ${dist}, ${dir}${street}`);
@@ -1294,6 +1303,7 @@ function updateNavLive(la,lo,speedMs){
   $('current-street').textContent=routeData.steps[sIdx]?.name||'';
   updateManeuverCard(sIdx,prog.distRem);
   if(speedMs!=null&&speedMs>=0){
+    navSpeedMs=speedMs;
     const mph=Math.round(speedMs*2.23694);
     $('current-speed-display').textContent=`${mph} mph`;
     // Speed limit sign
@@ -2772,7 +2782,7 @@ function updateFabsPos(){
   const _fabsR=$('fabs-r');if(_fabsR)_fabsR.style.bottom=`${bot}px`;
   if($('steps-tab')?.classList.contains('show')){
     const navH=$('nav-bar')?.offsetHeight||0;
-    const _stab=$('steps-tab');if(_stab)_stab.style.bottom=`${navH+8}px`;
+    const _stab=$('steps-tab');if(_stab)_stab.style.bottom=`${navH}px`;
     const _sdraw=$('steps-drawer');if(_sdraw)_sdraw.style.bottom=`${navH}px`;
   }
 }
@@ -2782,6 +2792,31 @@ window.addEventListener('resize',updateFabsPos);
 // ── ROUTE PREVIEW ACTIONS ─────────────────────────────────────────────────────
 $('btn-go').addEventListener('click',startNavigation);
 $('btn-cancel-route').addEventListener('click',clearNav);
+
+// ── FLIP ROUTE (swap origin ↔ destination) ────────────────────────────────────
+$('btn-flip-route').addEventListener('click',function(e){
+  e.stopPropagation();
+  if(!dest) return;
+  // Snapshot both sides before mutating
+  const oldDestCoords  = dest.coords.slice();       // [lon, lat]
+  const oldDestName    = dest.name;
+  const oldOrigin      = (customOrigin||userLoc).slice(); // [lon, lat]
+  const oldOriginName  = originName;
+  // New destination = old origin
+  dest = { name: oldOriginName, coords: oldOrigin };
+  const dn = $('rp-dest-name');
+  if(dn) dn.textContent = oldOriginName.split(',')[0];
+  // New origin = old destination
+  customOrigin = oldDestCoords;
+  originName   = oldDestName;
+  const on = $('rp-origin-name');
+  if(on) on.textContent = oldDestName.split(',')[0];
+  // Reroute
+  fetchRoute(true);
+  // Brief visual feedback
+  this.style.color='var(--accent-l)';
+  setTimeout(()=>{ this.style.color=''; },400);
+});
 document.querySelectorAll('.rp-mode').forEach(b=>b.addEventListener('click',()=>{
   const _prevMode=S.mode;
   S.mode=b.dataset.mode;
@@ -4923,7 +4958,7 @@ function clearNav(){
     originName=name;
     const el=$('rp-origin-name');
     if(el) el.textContent=name.split(',')[0];
-    if(dest&&userLoc) fetchRoute(true);
+    if(dest&&(userLoc||customOrigin)) fetchRoute(true);
   }
   function resetToGPS(){
     customOrigin=null;originName='Your location';
@@ -4931,64 +4966,148 @@ function clearNav(){
     if(el) el.textContent='Your location';
     if(dest&&userLoc) fetchRoute(true);
   }
+
+  // Stadia autocomplete for the From field
+  async function stadiaFrom(q){
+    const focusLat=userLoc?userLoc[1]:41.8781;
+    const focusLon=userLoc?userLoc[0]:-87.6298;
+    const url=`https://api.stadiamaps.com/geocoding/v1/autocomplete?text=${encodeURIComponent(q)}`+
+      `&focus.point.lat=${focusLat}&focus.point.lon=${focusLon}`+
+      `&layers=venue,address,street&limit=6&api_key=${STADIA_KEY}`;
+    const resp=await fetch(url);
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const geojson=await resp.json();
+    return (geojson.features||[]).map(f=>({
+      label: f.properties.label||f.properties.name||q,
+      lat:   f.geometry.coordinates[1],
+      lon:   f.geometry.coordinates[0],
+    }));
+  }
+
   document.addEventListener('click',function(e){
     const wp=document.getElementById('rp-from-wp');
     if(!wp||!wp.contains(e.target))return;
-    // Don't re-open if we clicked an input/button already inside
     if(e.target.tagName==='INPUT'||e.target.tagName==='BUTTON')return;
     const txt=document.getElementById('rp-origin-name');
     if(!txt)return;
-    // Build inline editor
-    const wrap=document.createElement('div');
-    wrap.style.cssText='display:flex;gap:4px;align-items:center;width:100%';
+
+    // ── Build editor shell ──────────────────────────────────────────────────
+    const shell=document.createElement('div');
+    shell.style.cssText='position:relative;width:100%';
+
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;gap:4px;align-items:center';
+
     const inp=document.createElement('input');
     inp.type='text';
-    inp.placeholder='Enter start address…';
+    inp.placeholder='Where from?';
     inp.value=originName==='Your location'?'':originName;
-    inp.style.cssText='flex:1;font-size:13px;padding:2px 6px;border:1px solid #555;border-radius:6px;background:#1e2430;color:#fff;outline:none';
+    inp.style.cssText='flex:1;font-size:13px;padding:3px 7px;border:1px solid var(--accent-l);border-radius:6px;background:#1e2430;color:#fff;outline:none;min-width:0';
+
     const gpsBtn=document.createElement('button');
     gpsBtn.textContent='📍';
     gpsBtn.title='Use my location';
-    gpsBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:16px;padding:0 2px';
-    wrap.appendChild(inp);
-    wrap.appendChild(gpsBtn);
-    txt.replaceWith(wrap);
+    gpsBtn.style.cssText='background:none;border:none;cursor:pointer;font-size:16px;padding:0 2px;flex-shrink:0';
+
+    row.appendChild(inp);
+    row.appendChild(gpsBtn);
+    shell.appendChild(row);
+
+    // ── Dropdown container ──────────────────────────────────────────────────
+    const drop=document.createElement('div');
+    drop.style.cssText='position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,0.6);z-index:999;display:none';
+    shell.appendChild(drop);
+
+    txt.replaceWith(shell);
     inp.focus();
-    inp.select();
+    if(inp.value) inp.select();
+
     function restore(name){
+      drop.style.display='none';
       const newTxt=document.createElement('div');
       newTxt.className='rp-wp-name';
       newTxt.id='rp-origin-name';
       newTxt.textContent=name;
-      wrap.replaceWith(newTxt);
+      shell.replaceWith(newTxt);
     }
+
+    function pickResult(lat,lon,label){
+      restore(label.split(',')[0]);
+      setCustomOrigin(lat,lon,label);
+    }
+
+    function showDrop(results){
+      if(!results.length){drop.style.display='none';return;}
+      drop.innerHTML='';
+      results.forEach(r=>{
+        const item=document.createElement('div');
+        item.textContent=r.label;
+        item.style.cssText='padding:9px 13px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--border);color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+        item.addEventListener('mousedown',function(ev){
+          ev.preventDefault(); // prevent blur firing before click
+          pickResult(r.lat,r.lon,r.label);
+        });
+        item.addEventListener('touchend',function(ev){
+          ev.preventDefault();
+          pickResult(r.lat,r.lon,r.label);
+        });
+        drop.appendChild(item);
+      });
+      if(drop.lastChild) drop.lastChild.style.borderBottom='none';
+      drop.style.display='block';
+    }
+
+    // Debounced live search
+    let fromTimer;
+    let lastResults=[];
+    inp.addEventListener('input',function(){
+      clearTimeout(fromTimer);
+      const q=inp.value.trim();
+      if(!q){drop.style.display='none';return;}
+      fromTimer=setTimeout(async()=>{
+        try{
+          lastResults=await stadiaFrom(q);
+          showDrop(lastResults);
+        }catch(err){console.warn('From autocomplete:',err);}
+      },220);
+    });
+
+    // Enter → pick top result
+    inp.addEventListener('keydown',async function(ev){
+      if(ev.key==='Enter'){
+        ev.preventDefault();
+        clearTimeout(fromTimer);
+        const q=inp.value.trim();
+        if(!q){restore(originName);return;}
+        try{
+          const results=await stadiaFrom(q);
+          if(!results.length){toast('Address not found',2500);inp.focus();return;}
+          pickResult(results[0].lat,results[0].lon,results[0].label);
+        }catch(err){toast('Search failed',2500);inp.focus();}
+      }
+      if(ev.key==='Escape'){restore(originName);}
+    });
+
+    // GPS button
     gpsBtn.addEventListener('click',function(ev){
       ev.stopPropagation();
       restore('Your location');
       resetToGPS();
     });
-    async function geocodeAndSet(){
-      const q=inp.value.trim();
-      if(!q){restore(originName);return;}
-      try{
-        const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(q),{headers:{'Accept-Language':'en'}});
-        const j=await r.json();
-        if(!j.length){toast('Address not found',2500);inp.focus();return;}
-        const name=j[0].display_name;
-        restore(name.split(',')[0]);
-        setCustomOrigin(parseFloat(j[0].lat),parseFloat(j[0].lon),name);
-      }catch(err){toast('Geocode error: '+err.message,3000);restore(originName);}
-    }
-    inp.addEventListener('keydown',function(ev){
-      if(ev.key==='Enter'){ev.preventDefault();geocodeAndSet();}
-      if(ev.key==='Escape'){restore(originName);}
-    });
+
+    // Blur → close dropdown (delay so mousedown on item fires first)
     inp.addEventListener('blur',function(){
-      setTimeout(()=>{
-        const still=document.getElementById('rp-origin-name');
-        if(!still) geocodeAndSet();
-      },150);
+      setTimeout(()=>{ drop.style.display='none'; },200);
     });
+  });
+
+  // Click outside the FROM panel to dismiss
+  document.addEventListener('click',function(e){
+    const shell=document.querySelector('#rp-from-wp input');
+    if(shell&&!shell.closest('#rp-from-wp').contains(e.target)){
+      const drop=shell.parentElement?.parentElement?.querySelector('div[style*="position:absolute"]');
+      if(drop) drop.style.display='none';
+    }
   });
 })();
 
