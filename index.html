@@ -945,44 +945,23 @@
   <div id="search-results"><div id="results-list"></div></div>
 </div>
 
-<!-- Settings sheet (mobile) -->
+<!-- Map view sheet (mobile) -->
 <div id="overlay-bg"></div>
 <div id="settings-sheet">
   <div class="ss-handle"></div>
   <div class="ss-hdr">
-    <span class="ss-title">Settings</span>
+    <span class="ss-title">Map view</span>
     <button class="x-btn" id="close-settings"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
   </div>
   <div class="ss-body">
-    <div class="ss-sec" id="avoid-section-m">
-      <div class="ss-sec-lbl">Avoid (driving only)</div>
-      <div class="ss-row">
-        <div><div class="ss-row-lbl">Highways</div></div>
-        <div class="tog" id="av-highways-m"></div>
-      </div>
-      <div class="ss-row">
-        <div><div class="ss-row-lbl">Ferries</div></div>
-        <div class="tog" id="av-ferries-m"></div>
-      </div>
-      <div class="ss-row">
-        <div><div class="ss-row-lbl">Unpaved Roads</div><div class="ss-row-sub">Limited support via OSM data</div></div>
-        <div class="tog" id="av-unpaved-m"></div>
-      </div>
-      <div class="ss-row">
-        <div><div class="ss-row-lbl">Tolls</div></div>
-        <div class="tog" id="av-tolls-m"></div>
-      </div>
+    <div class="ss-sec">
+      <div class="ss-map-grid" id="l-grid-m"></div>
     </div>
     <div class="ss-sec">
-      <div class="ss-sec-lbl">Layers</div>
       <div class="ss-row">
         <div><div class="ss-row-lbl">Live Traffic</div><div class="ss-row-sub">Show incidents &amp; congestion on map</div></div>
         <div class="tog" id="mvp-traffic-tog-m"></div>
       </div>
-    </div>
-    <div class="ss-sec">
-      <div class="ss-sec-lbl">Map Style</div>
-      <div class="ss-map-grid" id="l-grid-m"></div>
     </div>
   </div>
 </div>
@@ -1715,15 +1694,9 @@ function loadWaddleSettings(){
     document.querySelectorAll('.rp-mode').forEach(x=>x.classList.toggle('on',x.dataset.mode===S.mode));
     // Highlight the saved tile in both grids
     document.querySelectorAll('.mvp-tile,.ss-map-btn').forEach(b=>b.classList.toggle('on',b.dataset.s===mapStyle));
-    updateAvoidSectionVisibility();
     if(d.gtisOn)enableGTISLayer();
   }catch(e){}
 }
-function updateAvoidSectionVisibility(){
-  const sec=$('avoid-section-m');
-  if(sec)sec.style.display=S.mode==='driving'?'':'none';
-}
-
 function renderGTISMarkers(){
   clearGTISMarkers();
   if(!gtisLayerOn)return;
@@ -2820,7 +2793,6 @@ document.querySelectorAll('.rp-mode').forEach(b=>b.addEventListener('click',()=>
   const _prevMode=S.mode;
   S.mode=b.dataset.mode;
   document.querySelectorAll('.rp-mode').forEach(x=>x.classList.toggle('on',x.dataset.mode===S.mode));
-  updateAvoidSectionVisibility();
   saveWaddleSettings();
   // ── Immediately clear stale overlays from the previous mode ──────────────
   // Bug 1: remove driving traffic polys before showing a walk route
@@ -2851,7 +2823,6 @@ function updateMapViewPopupSelection(){
 renderMapGridMobile();
 renderMapGridDesktop();
 loadWaddleSettings();
-updateAvoidSectionVisibility();
 
 // ── SETTINGS (MOBILE) ────────────────────────────.6�────────────────────────────
 function closeSettings(){
@@ -2871,12 +2842,6 @@ $('overlay-bg').addEventListener('click',()=>{
   closeSettingsModal();
 });
 
-// Mobile avoid toggles
-['highways','ferries','unpaved','tolls'].forEach(k=>{
-  const mEl=$(`av-${k}-m`);
-  if(mEl) mEl.addEventListener('click',function(){ S.avoid[k]=!S.avoid[k];this.classList.toggle('on',S.avoid[k]);syncAvoidToggles();saveWaddleSettings();if(dest&&userLoc)fetchRoute(); });
-});
-
 // Desktop avoid toggles
 ['highways','ferries','unpaved','tolls'].forEach(k=>{
   const dEl=$(`av-${k}`);
@@ -2885,8 +2850,7 @@ $('overlay-bg').addEventListener('click',()=>{
 
 function syncAvoidToggles(){
   ['highways','ferries','unpaved','tolls'].forEach(k=>{
-    const m=$(`av-${k}-m`),d=$(`av-${k}`);
-    if(m)m.classList.toggle('on',S.avoid[k]);
+    const d=$(`av-${k}`);
     if(d)d.classList.toggle('on',S.avoid[k]);
   });
 }
@@ -3191,7 +3155,7 @@ function showDspHistory(){
   $('dsp-results').classList.add('show');
 }
 
-// ─ �� MOBILE HISTORY ────────────────────────────────────────────────────────────
+// ── MOBILE HISTORY ────────────────────────────────────────────────────────────
 function showMobHistory(){
   const items = loadHistory();
   if(!items.length){ closeMob(); return; }
