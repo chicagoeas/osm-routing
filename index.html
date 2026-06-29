@@ -2236,6 +2236,9 @@ function osrmManeuverToStep(step){
 // Apply a TomTom calculateRoute result.
 // Populates routeData (with trafficDelay), routeCoords, congestionData from traffic sections.
 function applyTomTomRouteResult(data,silent){
+  // Clear any leftover transit layers from a previous mode
+  clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
+  $("steps-inner").innerHTML=""; $("traffic-badge").classList.remove("show");
   const route=data.routes[0];
   const leg=route.legs[0];
   const sum=route.summary;
@@ -2588,6 +2591,8 @@ async function fetchOSRM(base,lo1,la1,lo2,la2,exclude=''){
 
 // Walking via OSRM
 async function fetchRouteOSRM(lo1,la1,lo2,la2,silent){
+  clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
+  $('steps-inner').innerHTML=''; $('traffic-badge').classList.remove('show');
   const url=`${OSRM_BASE}/${lo1},${la1};${lo2},${la2}?overview=full&geometries=geojson&steps=true`;
   let resp;
   try{ resp=await fetch(url); }
@@ -2655,6 +2660,8 @@ async function fetchTomTomRoute(lo1,la1,lo2,la2,avoid){
 // Apply an OSRM-car result the same way Valhalla results are applied.
 // Respects S.avoid toggles via OSRM's exclude query parameter.
 async function applyOSRMCarResult(lo1,la1,lo2,la2,silent){
+  clearTransitPolys(); transitLegs=[]; transitLegIdx=0;
+  $("steps-inner").innerHTML=""; $("traffic-badge").classList.remove("show");
   const excl=[
     S.avoid?.highways?'motorway':'',
     S.avoid?.ferries?'ferry':'',
@@ -2811,8 +2818,7 @@ document.querySelectorAll('.rp-mode').forEach(b=>b.addEventListener('click',()=>
   document.querySelectorAll('.rp-mode').forEach(x=>x.classList.toggle('on',x.dataset.mode===S.mode));
   updateAvoidSectionVisibility();
   saveWaddleSettings();
-  clearRouteVisuals(); // wipe old route/transit layers before re-fetching
-  if(dest&&userLoc)fetchRoute();
+  if(dest&&(userLoc||customOrigin))fetchRoute();
 }));
 
 // ── MAP GRIDS ─────────────────────────────────────────────────────────────────
@@ -4235,6 +4241,14 @@ async function findBusTrainOption(la1,lo1,la2,lo2,allDestStns){
 // ── Transit routing (3-leg: walk → train/bus → walk) ──────────────────────────
 async function fetchTransitRoute(silent=false){
   if(!dest||!userLoc)return;
+  // Clear driving route layers before drawing transit
+  trafficPolys.forEach(p=>map.removeLayer(p)); trafficPolys=[];
+  congestionData=[]; rawManeuvers=[];
+  if(routePoly){map.removeLayer(routePoly);routePoly=null;}
+  if(traveledPoly){map.removeLayer(traveledPoly);traveledPoly=null;}
+  routeData=null; routeCoords=[];
+  $('steps-inner').innerHTML=''; $('traffic-badge').classList.remove('show');
+  $('steps-drawer').classList.remove('show'); $('steps-tab').classList.remove('show','open');
   const[lo1,la1]=userLoc,[lo2,la2]=dest.coords;
   $('loading').classList.add('show');
   $('rp-transit-legs').style.display='none';
